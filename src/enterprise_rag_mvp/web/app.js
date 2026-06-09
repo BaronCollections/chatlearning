@@ -219,6 +219,8 @@ function renderDetails(details) {
     "quality_checks",
     "rerank_comparison",
     "options",
+    "inner_steps",
+    "interview_questions",
   ];
   Object.entries(details || {}).forEach(([key, value]) => {
     if (structuredKeys.includes(key)) return;
@@ -234,6 +236,12 @@ function renderDetails(details) {
 
   const options = renderBulletList("真实项目还会补", "option-list", details?.options);
   if (options) wrapper.appendChild(options);
+
+  const innerSteps = renderBulletList("细节点", "inner-detail-list", details?.inner_steps);
+  if (innerSteps) wrapper.appendChild(innerSteps);
+
+  const interviewQuestions = renderBulletList("面试关注点", "interview-list", details?.interview_questions);
+  if (interviewQuestions) wrapper.appendChild(interviewQuestions);
 
   const qualityChecks = renderQualityChecks(details?.quality_checks);
   if (qualityChecks) wrapper.appendChild(qualityChecks);
@@ -276,15 +284,25 @@ function term(termText, definition) {
   return { term: termText, definition };
 }
 
+function microStep(title, summary, details = {}) {
+  return { title, summary, details };
+}
+
 function node(id, title, summary, extra = {}) {
+  const defaults = nodeDefaults(id, title);
   return {
     id,
     title,
     summary,
     mode: "sequential",
     status: "ok",
-    details: {},
+    ...defaults,
     ...extra,
+    details: {
+      ...(defaults.details || {}),
+      ...(extra.details || {}),
+    },
+    innerSteps: extra.innerSteps || defaults.innerSteps || [],
   };
 }
 
@@ -321,6 +339,137 @@ const embeddingDetails = {
   ],
 };
 
+const ragInnerStepCatalog = {
+  request_intake: [
+    microStep("读取原始问题", "保留用户原文、top_k 和入口来源，后续 trace 必须能回放原始输入。", { interview_questions: ["为什么不能只记录归一化后的 query？", "trace_id 应该在哪里生成？"] }),
+    microStep("生成 trace_id", "为本次请求生成稳定追踪 ID，用于日志、Langfuse 和前后端关联。", { term_definitions: [term("trace_id", "一次请求的唯一追踪编号，用于把检索、模型、工具调用串起来。")] }),
+    microStep("初始化执行上下文", "把用户、会话、top_k、时间、权限上下文放进 pipeline context。", { pitfalls: ["上下文缺用户身份，后面就无法做权限过滤。"] }),
+  ],
+  input_guardrails: [
+    microStep("空输入检查", "拒绝空字符串、纯空白和没有业务语义的输入。", { quality_checks: [{ name: "non_empty", status: "ok", reason: "空输入进入 embedding 会污染观测和缓存。" }] }),
+    microStep("长度边界检查", "限制 query 长度，避免 tokenizer、embedding 或模型调用成本失控。", { term_definitions: [term("Token budget", "模型一次输入可处理的 token 上限。")] }),
+    microStep("注入风险识别", "识别忽略规则、泄露系统提示、伪造工具输出等 prompt injection 信号。", { pitfalls: ["RAG 里的攻击不只发生在用户问题，也会发生在检索回来的文档中。"] }),
+  ],
+  normalize_text: [
+    microStep("去首尾空白", "使用确定性规则移除首尾空格、换行和制表符。", { tool: "str.strip()" }),
+    microStep("压缩连续空白", "把连续空白统一成单个空格，让缓存键、token 和 trace 更稳定。", { tool: "split() + join()" }),
+    microStep("语义保持检查", "确认清洗只改变格式，不替换词义、不扩大问题范围。", { interview_questions: ["normalize 和 rewrite 的边界是什么？"] }),
+  ],
+  query_understanding: [
+    microStep("识别意图", "判断用户是在问规则、流程、定义、适用范围还是最新版本。", { term_definitions: [term("Intent", "用户真正想完成的动作或问题类型。 ")] }),
+    microStep("抽取业务实体", "识别员工、年假、报销、考勤、安全等制度实体。", { pitfalls: ["只抽关键词不理解对象范围，会导致权限和分类过滤错误。"] }),
+    microStep("标记歧义", "发现缺少年份、对象、校区、部门等信息时，为后续反问或保守回答做准备。", { quality_checks: [{ name: "ambiguity", status: "ok", reason: "歧义不是错误，但需要显式进入决策。" }] }),
+  ],
+  query_rewrite: [
+    microStep("生成独立问题", "把依赖上下文的短问句改写成可单独检索的问题。", { term_definitions: [term("Standalone query", "不依赖聊天上文也能表达完整意图的问题。 ")] }),
+    microStep("补充同义词", "补年假/年休假、制度/规则等业务同义词，提高召回率。", { pitfalls: ["同义词扩展不能加入用户没有问到的新对象。"] }),
+    microStep("语义漂移检查", "比较改写前后对象、动作、时间和范围是否一致。", { interview_questions: ["query rewrite 为什么可能造成错误答案？"] }),
+  ],
+  tokenize: [
+    microStep("调用 tokenizer", "用 embedding 模型对应 tokenizer 展示真实 token 边界。", { term_definitions: [term("Tokenizer", "把文本切成模型词表 token 的工具。 ")] }),
+    microStep("展示 token id", "展示每个 token 在词表里的数字编号，说明模型不是按中文词语直接理解。", { term_definitions: [term("Token id", "token 在模型词表中的整数编号。 ")] }),
+    microStep("检查截断风险", "确认 query 没有超过 embedding 服务的最大输入长度。", { quality_checks: [{ name: "truncation", status: "ok", reason: "被截断的 query 会让检索语义不完整。" }] }),
+  ],
+  query_embedding: [
+    microStep("选择 embedding 模型", "根据语言、部署边界、成本和检索质量选择模型。", embeddingDetails),
+    microStep("生成 query vector", "把用户检索问题转换成向量，用于相似度计算。", { term_definitions: [term("Query embedding", "查询文本对应的向量表示。 ")] }),
+    microStep("校验维度和版本", "确认 query vector 和文档向量使用同一模型、同一维度、同一归一化策略。", { quality_checks: embeddingDetails.quality_checks }),
+  ],
+  retrieval_plan: [
+    microStep("确定 top_k", "设置召回候选数量，平衡召回率、rerank 成本和上下文长度。", { interview_questions: ["top_k 过大或过小分别有什么问题？"] }),
+    microStep("生成过滤条件", "根据分类、权限、时间和对象范围生成 metadata filter。", { pitfalls: ["没有权限过滤的企业 RAG 不能上线。"] }),
+    microStep("选择检索策略", "决定使用 dense、sparse、hybrid 或 metadata-first 检索。", { term_definitions: [term("Hybrid search", "结合向量语义召回和关键词/稀疏召回的检索方式。 ")] }),
+  ],
+  initial_retrieval: [
+    microStep("执行向量检索", "用 pgvector/HNSW/余弦距离找语义相近 chunk。", { term_definitions: [term("HNSW", "常见近似最近邻向量索引结构。 ")] }),
+    microStep("读取 chunk 元数据", "带回标题层级、source、category、publish_date、permission_scope 等字段。", { quality_checks: [{ name: "source_metadata", status: "ok", reason: "没有来源字段就无法引用和审计。" }] }),
+    microStep("候选去重", "按 doc_id、heading_path 或 chunk_id 去掉重复候选。", { pitfalls: ["重复 chunk 会挤掉真正有用的证据。"] }),
+  ],
+  rerank: [
+    microStep("构造 query-document pair", "把用户问题和候选 chunk 组成重排输入。", { term_definitions: [term("Cross-encoder", "同时读取 query 和文档并输出相关性分数的模型。 ")] }),
+    microStep("计算 rerank score", "结合语义、关键词、标题、来源和业务规则重新打分。", { pitfalls: ["只看向量距离可能把语义相近但制度不相关的文本排第一。"] }),
+    microStep("排序稳定性检查", "保留 before/after 排名，方便解释为什么候选顺序改变。", { interview_questions: ["召回和 rerank 的职责边界是什么？"] }),
+  ],
+  evidence_quality: [
+    microStep("相关度阈值", "低于阈值时不强答，改为提示证据不足或反问。", { quality_checks: [{ name: "relevance_threshold", status: "ok", reason: "证据不足时强答会制造幻觉。" }] }),
+    microStep("时效性检查", "检查 publish_date、effective_date 和是否存在新旧制度冲突。", { pitfalls: ["制度问答经常错在旧政策覆盖新政策。"] }),
+    microStep("引用完整性检查", "确认答案能引用具体制度、章节、来源和必要元数据。", { interview_questions: ["RAG 如何降低 hallucination？"] }),
+  ],
+  answer_and_observe: [
+    microStep("组织证据上下文", "把高质量证据按引用和 token budget 拼成回答上下文。", { term_definitions: [term("Context window", "模型一次生成时可读取的上下文长度。 ")] }),
+    microStep("生成可追溯回答", "答案必须说明依据、边界和不确定性，不能脱离证据发挥。", { pitfalls: ["最终回答不能把检索不到的信息说成确定事实。"] }),
+    microStep("写入观测数据", "记录 trace、耗时、检索结果、rerank 分数和质量检查，方便 Langfuse 回放。", { term_definitions: [term("Span", "trace 中一个具体步骤的观测记录。 ")] }),
+  ],
+};
+
+const prefixInnerStepCatalog = {
+  embed: [
+    microStep("输入质量检查", "检查文本为空、过长、语言混杂和不可解析字符。"),
+    microStep("模型与维度确认", "确认 query/document embedding 使用同一模型版本和维度。", embeddingDetails),
+    microStep("索引与召回验证", "用样例 query 检查向量库是否能召回目标 chunk。", { interview_questions: ["如何判断 embedding 模型适不适合你的业务？"] }),
+  ],
+  doc: [
+    microStep("语义边界识别", "按标题、段落、条款和表格边界切分文档。"),
+    microStep("chunk 元数据绑定", "为 chunk 绑定来源、分类、权限和生效时间。"),
+    microStep("向量写入校验", "确认 chunk_id、embedding、metadata 能幂等 upsert。"),
+  ],
+  query: [
+    microStep("问题标准化", "把用户表达整理成可检索 query。"),
+    microStep("检索信号生成", "生成向量、关键词、过滤条件等多路信号。"),
+    microStep("漂移和截断检查", "确认处理后没有改变原意，也没有超过 token budget。"),
+  ],
+  lc: [
+    microStep("组件装配", "把 prompt、model、tools、retriever 和 memory 组合成 chain/agent。"),
+    microStep("调用边界控制", "限制工具调用次数、输入输出 schema 和异常分支。"),
+    microStep("结果解释", "把 tool observation 和模型输出串成可审计轨迹。", { interview_questions: ["LangChain 的优点和局限是什么？"] }),
+  ],
+  lg: [
+    microStep("State 读写", "每个节点只读写明确的 state 字段，避免隐式共享状态。"),
+    microStep("条件边和并行边", "用 graph edge 表达分支、循环、并行和汇聚。"),
+    microStep("Checkpoint 与恢复", "失败后从保存的 state 继续执行，而不是整条链重跑。", { interview_questions: ["LangGraph 相比普通 chain 解决了什么问题？"] }),
+  ],
+  qr: [
+    microStep("候选改写生成", "生成多个查询候选，不直接相信第一个改写结果。"),
+    microStep("语义漂移检测", "检查改写是否改变对象、动作、时间和范围。"),
+    microStep("重排与证据校验", "用 rerank 和质量阈值控制最终进入答案的证据。"),
+  ],
+  ma: [
+    microStep("任务拆解", "协调器把问题拆成检索、推理、审查等角色任务。"),
+    microStep("并行执行", "互不依赖的 Agent 并行工作，减少等待时间。"),
+    microStep("冲突解决", "合并多个 Agent 的结果，显式处理矛盾和缺证据。", { interview_questions: ["多 Agent 什么时候有必要，什么时候是过度设计？"] }),
+  ],
+  ingest: [
+    microStep("数据抽取", "从业务系统拉取列表、详情、附件和权限字段。"),
+    microStep("清洗切块", "清理正文并按语义和 token budget 切 chunk。"),
+    microStep("幂等入库", "用 doc_id/chunk_id 做断点续跑、更新和删除同步。"),
+  ],
+  lf: [
+    microStep("Trace 建模", "把一次请求拆成 trace 和多个 span。"),
+    microStep("评分与反馈", "记录人工反馈、自动评分和错误标签。"),
+    microStep("回放分析", "按 trace 回放，定位改写、召回、rerank 或生成问题。", { interview_questions: ["为什么 RAG 系统需要 observability？"] }),
+  ],
+};
+
+function nodeDefaults(id, title) {
+  const prefix = String(id).split("_")[0];
+  const innerSteps = ragInnerStepCatalog[id] || prefixInnerStepCatalog[prefix] || [
+    microStep("输入", `读取 ${title} 需要的上游状态。`),
+    microStep("处理", `执行 ${title} 的核心逻辑。`),
+    microStep("校验", `检查 ${title} 的输出是否能安全交给下游。`),
+  ];
+  return {
+    innerSteps,
+    details: {
+      inner_step_count: innerSteps.length,
+      interview_questions: [
+        `${title} 在真实业务里失败时，应该看哪些日志或 trace？`,
+        `${title} 的输入、输出和边界条件分别是什么？`,
+      ],
+    },
+  };
+}
+
+
 function traceStepMap(traceData) {
   const map = new Map();
   function visit(step) {
@@ -332,9 +481,72 @@ function traceStepMap(traceData) {
   return map;
 }
 
+function liveChildToInnerStep(parent, child, index) {
+  return {
+    id: `${parent.id}.live.${child.key || index}`,
+    title: child.title || child.key || `细节点 ${index + 1}`,
+    summary: child.summary || "后端返回的真实执行子步骤。",
+    mode: child.execution_mode || parent.mode || "sequential",
+    status: child.status || "ok",
+    duration_ms: child.duration_ms,
+    details: {
+      ...(child.details || {}),
+      backend_step_key: child.key,
+      backend_status: child.status || "ok",
+      interview_questions: [
+        "这个子步骤的输入是什么，输出又交给了谁？",
+        "如果这个子步骤失败，用户会看到什么，工程侧应该如何降级？",
+      ],
+    },
+  };
+}
+
+function normalizeInnerStep(parent, innerStep, index) {
+  if (typeof innerStep === "string") {
+    return {
+      id: `${parent.id}.inner.${index}`,
+      title: innerStep,
+      summary: "静态学习细节点。",
+      mode: parent.mode || "sequential",
+      status: "ok",
+      details: {},
+    };
+  }
+  return {
+    id: innerStep.id || `${parent.id}.inner.${index}`,
+    title: innerStep.title || `细节点 ${index + 1}`,
+    summary: innerStep.summary || "静态学习细节点。",
+    mode: innerStep.mode || parent.mode || "sequential",
+    status: innerStep.status || "ok",
+    details: {
+      ...(innerStep.details || {}),
+      parent_phase: parent.title,
+      interview_questions: [
+        ...(innerStep.details?.interview_questions || []),
+        `${parent.title} 里的这个细节点为什么不能省略？`,
+      ],
+    },
+  };
+}
+
 function mergeTraceNode(staticNode, liveSteps) {
   const live = staticNode.traceKey ? liveSteps.get(staticNode.traceKey) : null;
-  if (!live) return { ...staticNode, details: { ...(staticNode.details || {}) } };
+  const staticInnerSteps = (staticNode.innerSteps || []).map((item, index) => normalizeInnerStep(staticNode, item, index));
+  if (!live) {
+    return {
+      ...staticNode,
+      innerSteps: staticInnerSteps,
+      details: {
+        ...(staticNode.details || {}),
+        inner_steps: staticInnerSteps.map((item) => item.title),
+      },
+    };
+  }
+
+  const liveInnerSteps = (live.children || []).map((child, index) => liveChildToInnerStep(staticNode, child, index));
+  const liveTitles = new Set(liveInnerSteps.map((child) => child.title));
+  const staticRemainder = staticInnerSteps.filter((child) => !liveTitles.has(child.title));
+  const innerSteps = liveInnerSteps.length > 0 ? [...liveInnerSteps, ...staticRemainder] : staticInnerSteps;
 
   return {
     ...staticNode,
@@ -343,12 +555,13 @@ function mergeTraceNode(staticNode, liveSteps) {
     status: live.status || staticNode.status || "ok",
     mode: live.execution_mode || staticNode.mode || "sequential",
     duration_ms: live.duration_ms,
+    innerSteps,
     details: {
       ...(staticNode.details || {}),
       ...(live.details || {}),
       backend_step_key: live.key,
       backend_status: live.status || "ok",
-      inner_steps: (live.children || []).map((child) => child.title || child.key),
+      inner_steps: innerSteps.map((child) => child.title),
     },
   };
 }
@@ -399,7 +612,7 @@ function buildRagWorkflow(traceData) {
         },
       ],
     },
-    { type: "merge", title: "查询表示与检索计划汇聚", nodes: [node("retrieval_merge", "汇聚检索输入", "语义向量和业务过滤条件在这里合并，形成可执行检索请求。", { sequence: "06", mode: "merge", details: { why: "并行不是各做各的，必须在召回前汇合成统一的查询计划。" } })] },
+    { type: "merge", title: "查询表示与检索计划汇聚", nodes: [] },
     { type: "serial", nodes: [node("initial_retrieval", "初始召回", "用向量库或混合检索找到候选 chunk。", { traceKey: "initial_retrieval", sequence: "07" })] },
     { type: "serial", nodes: [node("rerank", "Rerank 重排序", "对候选证据重新打分，把更相关、更可引用的内容排到前面。", { traceKey: "rerank", sequence: "08", details: { why: "初始召回负责找全，rerank 负责把最可能回答问题的证据放到前面。" } })] },
     { type: "serial", nodes: [node("evidence_quality", "证据质量检查", "检查相关度、来源、时效、冲突和是否需要反问。", { traceKey: "evidence_quality", sequence: "09" })] },
@@ -413,8 +626,53 @@ function buildRagWorkflow(traceData) {
   };
 }
 
+function extraWorkflowRows(id) {
+  const rowsByWorkflow = {
+    "embedding-retrieval": [
+      { type: "serial", nodes: [node("embed_benchmark", "Embedding Benchmark", "用标准问题集比较模型、chunk 策略和召回指标。", { sequence: "06" })] },
+      { type: "serial", nodes: [node("embed_monitor", "Embedding 监控", "监控向量维度、索引大小、召回质量和模型版本漂移。", { sequence: "07" })] },
+    ],
+    "langchain-agent": [
+      { type: "serial", nodes: [node("lc_tool_call", "Tool Call", "把模型选择的工具调用转换成受控函数执行。", { sequence: "05" })] },
+      { type: "serial", nodes: [node("lc_observation", "Observation", "把工具返回结果写回 Agent 可见上下文。", { sequence: "06" })] },
+      { type: "serial", nodes: [node("lc_parser", "Output Parser", "把模型输出解析成结构化结果或可展示答案。", { sequence: "07" })] },
+      { type: "serial", nodes: [node("lc_guardrails", "最终护栏", "检查答案是否越权、缺证据、格式错误或工具调用失败。", { sequence: "08" })] },
+    ],
+    "langgraph-workflow": [
+      { type: "serial", nodes: [node("lg_condition", "Conditional Edge", "根据 state 判断下一步走检索、工具、人工介入还是结束。", { sequence: "05" })] },
+      { type: "serial", nodes: [node("lg_human", "Human-in-the-loop", "高风险或证据不足时进入人工确认节点。", { sequence: "06" })] },
+      { type: "serial", nodes: [node("lg_retry", "Retry / Recovery", "节点失败时按 state 和 checkpoint 恢复执行。", { sequence: "07" })] },
+      { type: "serial", nodes: [node("lg_finish", "Graph Finish", "把最终 state 转成答案、事件和观测记录。", { sequence: "08" })] },
+    ],
+    "rewrite-rerank": [
+      { type: "serial", nodes: [node("qr_retrieve", "多路召回", "用原 query、改写 query、关键词和 metadata filter 多路召回。", { sequence: "05" })] },
+      { type: "serial", nodes: [node("qr_threshold", "阈值与反问", "相关性不够时拒绝强答，转为澄清问题。", { sequence: "06" })] },
+      { type: "serial", nodes: [node("qr_answer", "证据驱动回答", "只基于通过 rerank 和质量检查的证据回答。", { sequence: "07" })] },
+      { type: "serial", nodes: [node("qr_observe", "改写效果观测", "记录 rewrite 候选、召回差异和 rerank 前后排序。", { sequence: "08" })] },
+    ],
+    "multi-agent": [
+      { type: "serial", nodes: [node("ma_contract", "任务契约", "定义每个 Agent 的输入、输出、禁止行为和验收标准。", { sequence: "04" })] },
+      { type: "serial", nodes: [node("ma_review_gate", "审查闸口", "检查多个 Agent 的结果是否冲突、缺证据或越权。", { sequence: "05" })] },
+      { type: "serial", nodes: [node("ma_memory", "共享记忆", "把可复用事实写入短期或长期记忆，避免重复工作。", { sequence: "06" })] },
+      { type: "serial", nodes: [node("ma_eval", "协作评估", "评估并行协作是否真的提升质量，而不是增加复杂度。", { sequence: "07" })] },
+    ],
+    "enterprise-ingest": [
+      { type: "serial", nodes: [node("ingest_validate", "导入校验", "校验 chunk 数、空文本、重复 ID、权限字段和来源字段。", { sequence: "05" })] },
+      { type: "serial", nodes: [node("ingest_delete_sync", "删除同步", "源系统删除或下架文档时，同步删除向量和 chunk。", { sequence: "06" })] },
+      { type: "serial", nodes: [node("ingest_monitor", "导入监控", "记录耗时、失败重试、断点续跑和告警。", { sequence: "07" })] },
+    ],
+    "langfuse-observe": [
+      { type: "serial", nodes: [node("lf_dataset", "Dataset", "沉淀标准问题集，用于回归测试和模型/检索策略对比。", { sequence: "04" })] },
+      { type: "serial", nodes: [node("lf_prompt_version", "Prompt 版本", "记录 prompt、模型和参数版本，方便回滚和对比。", { sequence: "05" })] },
+      { type: "serial", nodes: [node("lf_eval", "自动评估", "用规则、LLM-as-judge 或人工标注评估答案质量。", { sequence: "06" })] },
+      { type: "serial", nodes: [node("lf_alert", "异常告警", "低分、超时、成本异常或证据缺失时触发告警。", { sequence: "07" })] },
+    ],
+  };
+  return rowsByWorkflow[id] || [];
+}
+
 function workflowFromRows(id, title, summary, rows) {
-  return () => ({ id, title, summary, rows: hydrateRows(rows, new Map()) });
+  return () => ({ id, title, summary, rows: hydrateRows([...rows, ...extraWorkflowRows(id)], new Map()) });
 }
 
 const workflowDefinitions = [
@@ -584,7 +842,7 @@ function collapseDetailPanel() {
 }
 
 function selectWorkflowNode(item, nodeButton, detailPanel) {
-  traceSteps.querySelectorAll(".trace-tree-node.selected").forEach((selected) => selected.classList.remove("selected"));
+  traceSteps.querySelectorAll(".trace-tree-node.selected, .inner-step-chip.selected").forEach((selected) => selected.classList.remove("selected"));
   nodeButton.classList.add("selected");
   detailPanel.classList.remove("collapsed");
   detailPanel.innerHTML = "";
@@ -592,8 +850,9 @@ function selectWorkflowNode(item, nodeButton, detailPanel) {
 }
 
 function renderWorkflowNode(item, rowIndex, detailPanel) {
-  const button = document.createElement("button");
-  button.type = "button";
+  const button = document.createElement("article");
+  button.setAttribute("role", "button");
+  button.tabIndex = 0;
   button.className = [
     "trace-tree-node",
     "workflow-node",
@@ -620,7 +879,32 @@ function renderWorkflowNode(item, rowIndex, detailPanel) {
   summary.textContent = item.summary;
 
   button.append(top, title, summary);
+
+  if (Array.isArray(item.innerSteps) && item.innerSteps.length > 0) {
+    const innerList = document.createElement("div");
+    innerList.className = "inner-step-list";
+    item.innerSteps.forEach((innerStep, index) => {
+      const normalized = normalizeInnerStep(item, innerStep, index);
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "inner-step-chip";
+      chip.textContent = `${index + 1}. ${normalized.title}`;
+      chip.addEventListener("click", (event) => {
+        event.stopPropagation();
+        selectWorkflowNode(normalized, chip, detailPanel);
+      });
+      innerList.appendChild(chip);
+    });
+    button.appendChild(innerList);
+  }
+
   button.addEventListener("click", () => selectWorkflowNode(item, button, detailPanel));
+  button.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectWorkflowNode(item, button, detailPanel);
+    }
+  });
   return button;
 }
 
@@ -691,6 +975,23 @@ function getSelectedWorkflow() {
   return definition.build(latestTraceData);
 }
 
+function countWorkflowStats(workflow) {
+  let phases = 0;
+  let innerSteps = 0;
+  workflow.rows.forEach((row) => {
+    if (row.type === "parallel_group") {
+      row.branches.forEach((branch) => {
+        phases += branch.nodes.length;
+        innerSteps += branch.nodes.reduce((total, item) => total + (item.innerSteps || []).length, 0);
+      });
+      return;
+    }
+    phases += (row.nodes || []).length;
+    innerSteps += (row.nodes || []).reduce((total, item) => total + (item.innerSteps || []).length, 0);
+  });
+  return { phases, innerSteps };
+}
+
 function renderWorkflowGraph(workflow) {
   traceSteps.innerHTML = "";
   const workbench = document.createElement("div");
@@ -704,7 +1005,8 @@ function renderWorkflowGraph(workflow) {
 
   const intro = document.createElement("div");
   intro.className = "workflow-intro";
-  intro.textContent = workflow.summary;
+  const stats = countWorkflowStats(workflow);
+  intro.textContent = `${workflow.summary} · ${stats.phases} 个主阶段 / ${stats.innerSteps} 个细节点`;
   graph.appendChild(intro);
 
   const detailPanel = document.createElement("aside");

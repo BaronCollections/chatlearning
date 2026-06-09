@@ -446,6 +446,7 @@ button {
   background: #ffffff;
   color: var(--text);
   text-align: left;
+  cursor: pointer;
   box-shadow: 0 8px 18px rgba(16, 24, 40, 0.06);
 }
 
@@ -525,6 +526,43 @@ button {
   font-weight: 500;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.inner-step-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dashed #d8dee9;
+}
+
+.inner-step-chip {
+  max-width: 100%;
+  min-height: 24px;
+  border: 1px solid #d8dee9;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #344054;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.25;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.inner-step-chip:hover,
+.inner-step-chip:focus-visible,
+.inner-step-chip.selected {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+  outline: none;
+}
+
+.workflow-branch .inner-step-chip {
+  font-size: 10.5px;
+  padding-inline: 7px;
 }
 
 .tree-detail-panel {
@@ -669,6 +707,8 @@ pre {
 .term-list,
 .pitfall-list,
 .option-list,
+.inner-detail-list,
+.interview-list,
 .quality-check-list,
 .rerank-comparison {
   border: 1px solid var(--panel-border);
@@ -682,6 +722,8 @@ pre {
 .term-list h3,
 .pitfall-list h3,
 .option-list h3,
+.inner-detail-list h3,
+.interview-list h3,
 .quality-check-list h3,
 .rerank-comparison h3 {
   margin: 0 0 8px;
@@ -691,7 +733,9 @@ pre {
 .choice-box p,
 .choice-box li,
 .pitfall-list li,
-.option-list li {
+.option-list li,
+.inner-detail-list li,
+.interview-list li {
   color: var(--text);
   font-size: 13px;
   line-height: 1.55;
@@ -726,7 +770,9 @@ pre {
 }
 
 .pitfall-list ul,
-.option-list ul {
+.option-list ul,
+.inner-detail-list ul,
+.interview-list ul {
   margin: 0;
   padding-left: 18px;
 }

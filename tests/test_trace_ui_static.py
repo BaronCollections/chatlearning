@@ -34,6 +34,17 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert "多 Agent 协作" in app_js
     assert "企业知识库导入" in app_js
     assert "Langfuse 观测链路" in app_js
+    assert "ragInnerStepCatalog" in app_js
+    assert "prefixInnerStepCatalog" in app_js
+    assert "inner-step-list" in app_js
+    assert "inner-step-chip" in app_js
+    assert "面试关注点" in app_js
+    assert "个主阶段 /" in app_js
+    assert "个细节点" in app_js
+    assert "lc_tool_call" in app_js
+    assert "lg_condition" in app_js
+    assert "ma_review_gate" in app_js
+    assert "lf_dataset" in app_js
 
 
     assert "trace-tree-workbench" in app_js
@@ -60,6 +71,10 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert ".workflow-row.parallel_group" in app_css
     assert ".merge-rail" in app_css
     assert ".elbow-connector" in app_css
+    assert ".inner-step-list" in app_css
+    assert ".inner-step-chip" in app_css
+    assert ".interview-list" in app_css
+    assert ".inner-detail-list" in app_css
     assert ".tree-detail-panel" in app_css
     assert ".term-list" in app_css
     assert ".quality-check-list" in app_css
