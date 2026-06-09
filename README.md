@@ -1,2 +1,221 @@
-# chatlearning
-chatlearning
+# ChatLearning: AI Workflow Trace Workbench
+
+ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工作台。它把一次 AI 问答拆成可观察、可点击、可解释的执行流程，让学生、业务方和工程师看到系统内部到底发生了什么。
+
+当前版本包含一个 ChatGPT 风格的对话区，以及右侧的二维流程图画布。右侧不再只展示单条线性 RAG 流程，而是可以通过下拉框切换不同 AI 框架/范式的执行图谱：顺序节点、并行分支、汇聚节点和节点详情都会被明确展示。
+
+## 它对你有什么帮助
+
+- 学习 RAG：看到输入校验、query 改写、分词、embedding、召回、rerank、证据检查、答案观测这些步骤如何衔接。
+- 讲清工程细节：点击节点可以解释为什么用某个技术、有哪些替代方案、真实项目会踩什么坑。
+- 面试和演示：不是只说概念，而是用可视化流程说明真实业务里的 RAG/Agent 设计。
+- 调试检索问题：发送问题后，RAG 流程节点会叠加本次后端 trace，方便定位是改写、embedding、召回还是 rerank 出了问题。
+- 扩展真实系统：项目保留 pgvector、embedding 服务、CLI ingest/search 和 Web API，可以逐步接入真实知识库。
+
+## 当前内置流程
+
+右侧“执行流程”下拉框内置这些流程：
+
+- `RAG 基础流程`：展示真实 RAG 问答中的顺序、并行和汇聚关系。
+- `Embedding 检索流程`：展开 query/document embedding、向量空间、ANN 检索和混合召回。
+- `LangChain Agent`：展示 prompt、tool registry、retriever 和工具调用循环。
+- `LangGraph 工作流`：展示 state、router、并行节点、reducer 和 checkpoint。
+- `Query Rewrite + Rerank`：专门解释召回前改写、语义漂移检查和召回后重排。
+- `多 Agent 协作`：展示 coordinator、retriever/reasoner/reviewer 并行协作和汇总。
+- `企业知识库导入`：展示文档列表、正文清洗、附件解析、权限 metadata、chunk、embedding、upsert。
+- `Langfuse 观测链路`：展示 trace/span/score/replay 如何帮助回放和评估 RAG/Agent 调用。
+
+## RAG 基础流程怎么表达并行
+
+真实 RAG 不是简单的一条直线。当前 `RAG 基础流程` 会这样展示：
+
+1. 请求接入
+2. 输入护栏
+3. 文本归一化
+4. Query 理解
+5. 并行准备
+   - 语义表示路径：query rewrite -> tokenize -> query embedding
+   - 业务约束路径：retrieval plan，包括 top_k、权限、分类、时间和过滤条件
+6. 汇聚检索输入
+7. 初始召回
+8. Rerank 重排序
+9. 证据质量检查
+10. 答案与观测
+
+后端仍然保留更细的 trace 节点。前端会把这些 trace 叠加到对应流程节点上，既保持教学画布清晰，也保留真实执行细节。
+
+## 关键技术点
+
+- RAG：Retrieval-Augmented Generation，先检索可信知识，再让模型基于证据回答。
+- Query rewrite：把用户口语化问题改写成更适合检索的问题，但必须检查语义漂移。
+- Tokenize：把文本拆成模型可处理的 token，并展示 token id，方便理解模型实际输入。
+- Embedding：把文本语义映射成向量，用于相似度检索。
+- BGE-M3：当前示例推荐的 embedding 模型，适合中文、英文和中英混排，也适合本地部署。
+- pgvector：PostgreSQL 的向量扩展，用熟悉的数据库系统承载向量检索。
+- Rerank：对初始召回结果重新排序，减少“向量相似但业务不相关”的候选进入答案。
+- Langfuse：RAG/Agent 观测平台，可记录 trace、span、输入输出、耗时、评分和回放。
+
+## 项目结构
+
+```text
+.
+├── db/001_pgvector_schema.sql          # pgvector 表结构
+├── src/enterprise_rag_mvp/
+│   ├── cli.py                          # init-db / ingest-samples / search
+│   ├── embedding_client.py             # embedding 服务客户端
+│   ├── models.py                       # PolicyChunk / SearchResult 数据模型
+│   ├── pgvector_store.py               # pgvector 写入与检索
+│   ├── samples.py                      # 可公开的样例制度 chunk
+│   ├── trace_pipeline.py               # 后端 RAG trace 主流程
+│   ├── web_app.py                      # FastAPI Web 服务
+│   └── web/                            # 原生 JS/CSS 前端
+└── tests/                              # 后端与前端静态测试
+```
+
+## 本地运行
+
+要求：
+
+- Python 3.11+
+- 一个 embedding 服务，默认地址是 `http://127.0.0.1:8001`
+- 可选：PostgreSQL + pgvector
+
+安装依赖：
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+```
+
+没有 pgvector 时，可以先用内存样例模式启动页面：
+
+```bash
+RAG_DISABLE_PGVECTOR=true \
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+.venv/bin/python -m uvicorn enterprise_rag_mvp.web_app:app --host 127.0.0.1 --port 8010
+```
+
+打开：
+
+```text
+http://127.0.0.1:8010
+```
+
+## 使用 pgvector
+
+创建数据库：
+
+```bash
+createdb enterprise_rag_mvp
+```
+
+初始化表结构：
+
+```bash
+RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
+.venv/bin/python -m enterprise_rag_mvp.cli init-db
+```
+
+写入公开样例数据：
+
+```bash
+RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-samples
+```
+
+命令行检索：
+
+```bash
+RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+.venv/bin/python -m enterprise_rag_mvp.cli search '员工年假规则是什么？' --top-k 3
+```
+
+启动 Web 服务：
+
+```bash
+RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+.venv/bin/python -m uvicorn enterprise_rag_mvp.web_app:app --host 0.0.0.0 --port 8010
+```
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `EMBEDDING_SERVICE_URL` | `http://127.0.0.1:8001` | embedding 服务地址 |
+| `RAG_DATABASE_DSN` | `postgresql://127.0.0.1:5432/enterprise_rag_mvp` | PostgreSQL 连接串 |
+| `RAG_DISABLE_PGVECTOR` | `false` | 设置为 `true` 时跳过 pgvector，使用内存样例模式 |
+
+不要把 `.env`、cookie、session、数据库密码或真实源文档提交到仓库。
+
+## 怎么喂数据
+
+公开仓库只包含少量手写样例 chunk，不包含真实企业制度数据。真实接入时建议写一个 importer，按下面流程处理：
+
+1. 从业务系统分页拉取文档列表，只保存必要的文档 ID、标题、分类、发布时间和权限字段。
+2. 逐篇拉取详情正文，不要把 cookie、session 或内部接口地址写死在代码里。
+3. 清洗 HTML、PDF 或 Word 内容，保留标题层级、表格文本、附件信息和来源信息。
+4. 按语义边界切 chunk，例如按章节、标题、条款和最大 token 数切分。
+5. 为每个 chunk 写入 metadata，例如 `source`、`category`、`audience`、`publish_date`、`effective_date`、`permission_scope`。
+6. 调用 embedding 服务把 chunk 文本转成 document embedding。
+7. 调用 `PgVectorStore.upsert_chunks(chunks, embeddings)` 写入数据库。
+8. 用真实问题回放 trace，检查召回、rerank、证据质量和答案观测。
+
+最小自定义导入示例：
+
+```python
+from enterprise_rag_mvp.embedding_client import EmbeddingClient
+from enterprise_rag_mvp.models import PolicyChunk
+from enterprise_rag_mvp.pgvector_store import PgVectorStore
+
+chunks = [
+    PolicyChunk(
+        chunk_id="policy-001#chunk-001",
+        doc_id="policy-001",
+        block_id="section-1",
+        text="这里放清洗后的制度正文片段。",
+        heading_path=["人力制度", "年休假"],
+        metadata={
+            "source": "internal-policy-system",
+            "category": "HR",
+            "publish_date": "2026-01-01",
+            "permission_scope": "employee",
+        },
+    )
+]
+
+embedding_client = EmbeddingClient(base_url="http://127.0.0.1:8001")
+embeddings = embedding_client.embed([chunk.text for chunk in chunks], input_type="document")
+PgVectorStore("postgresql://127.0.0.1:5432/enterprise_rag_mvp").upsert_chunks(chunks, embeddings)
+```
+
+生产导入还需要补齐：分页重试、限流、断点续跑、重复文档检测、删除同步、权限过滤、附件解析、数据脱敏、导入日志和失败告警。
+
+## 隐私与发布边界
+
+这个仓库只应该包含代码、公开样例和说明文档。
+
+不要提交：
+
+- `.venv/`、缓存、日志和临时文件。
+- `.env`、数据库密码、API key、cookie、session。
+- 真实制度正文、附件、学生或员工信息。
+- 本机绝对路径和个人目录信息。
+
+如果要接入真实数据，建议把连接信息放到部署平台的环境变量里，把原始文档放到受控存储中，并只把脱敏后的样例数据用于公开演示。
+
+## 测试
+
+```bash
+.venv/bin/python -m pytest -q
+node --check src/enterprise_rag_mvp/web/app.js
+```
+
+## 当前边界
+
+- 当前没有内置 PDF/Word 解析器，需要在 importer 中接入专门的解析组件。
+- 当前没有真正调用 LLM 生成长答案，重点是 RAG 检索链路、流程图谱和 trace 学习展示。
+- 当前 Langfuse 是生产观测建议，仓库内未强制依赖 Langfuse SDK。
+- 内存样例模式只适合教学和联调，真实业务应使用 pgvector 或其它可持久化向量库。
