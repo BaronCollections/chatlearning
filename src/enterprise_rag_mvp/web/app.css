@@ -169,6 +169,56 @@ h2 {
   white-space: pre-wrap;
 }
 
+.structured-answer {
+  display: grid;
+  gap: 8px;
+  white-space: normal;
+}
+
+.answer-section {
+  display: grid;
+  gap: 5px;
+  border-left: 3px solid #d0d5dd;
+  padding-left: 9px;
+}
+
+.answer-section-summary {
+  border-left-color: transparent;
+  padding-left: 0;
+}
+
+.answer-section-title {
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.answer-section-处理结果 {
+  border-left-color: #16a34a;
+}
+
+.answer-section-不确定性提醒 {
+  border-left-color: #d97706;
+}
+
+.answer-section-body {
+  margin: 0;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.58;
+  white-space: pre-wrap;
+}
+
+.answer-result-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #14532d;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
 .answer-citations {
   margin-top: 10px;
   padding-top: 10px;
@@ -193,9 +243,13 @@ h2 {
 
 .answer-citations li {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 3px 7px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px 8px;
   align-items: start;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px;
   font-size: 12px;
   line-height: 1.35;
 }
@@ -205,10 +259,23 @@ h2 {
   font-weight: 850;
 }
 
-.answer-citations a {
+.answer-citations a,
+.answer-source-title {
   color: #1d4ed8;
   font-weight: 750;
   overflow-wrap: anywhere;
+}
+
+.answer-source-link {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-decoration: none;
 }
 
 .answer-citations small {

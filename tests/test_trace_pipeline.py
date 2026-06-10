@@ -847,6 +847,10 @@ def test_in_memory_demo_answers_absenteeism_duration_query():
     assert "扣除旷工期间工资" in response["answer"]
     assert "给予记过处分" in response["answer"]
     assert "属于二类违规行为" in response["answer"]
+    assert "链接：https://work.yungu.org/policyDetail/11" in response["answer"]
+    assert "链接：https://work.yungu.org/policyDetail/16" in response["answer"]
+    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/11"
+    assert response["results"][1]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
 
 
 def test_in_memory_demo_handles_absenteeism_penalty_typo_query():

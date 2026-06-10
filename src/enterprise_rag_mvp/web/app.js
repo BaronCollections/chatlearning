@@ -33,12 +33,90 @@ function appendMessage(role, text) {
   messages.scrollTop = messages.scrollHeight;
 }
 
+const answerSectionLabels = ["事实", "规则匹配", "违规类型", "处理结果", "处罚依据", "不确定性提醒", "结论", "处理建议"];
+
+function stripAnswerSourceBlock(answerText) {
+  return String(answerText || "").split("\n\n相关来源：")[0].replace(/\n?检索方式：.*$/, "").trim();
+}
+
+function parseAnswerSections(answerText) {
+  const body = stripAnswerSourceBlock(answerText);
+  if (!body) return [];
+  const lines = body.split("\n").map((line) => line.trim()).filter(Boolean);
+  const sections = [];
+  let current = null;
+
+  lines.forEach((line) => {
+    const match = line.match(/^([^：]{2,10})：(.*)$/);
+    const label = match ? match[1] : "";
+    if (match && answerSectionLabels.includes(label)) {
+      current = { label: label, lines: [] };
+      const value = match[2].trim();
+      if (value) current.lines.push(value);
+      sections.push(current);
+      return;
+    }
+
+    if (/^\d+[.．]/.test(line) && current?.label === "处理结果") {
+      current.lines.push(line);
+      return;
+    }
+
+    current = { label: null, lines: [line] };
+    sections.push(current);
+  });
+
+  return sections;
+}
+
+function renderAnswerSection(section) {
+  const article = document.createElement("article");
+  article.className = `answer-section${section.label ? ` answer-section-${section.label}` : " answer-section-summary"}`;
+
+  if (section.label) {
+    const title = document.createElement("div");
+    title.className = "answer-section-title";
+    title.textContent = section.label;
+    article.appendChild(title);
+  }
+
+  if (section.label === "处理结果" && section.lines.some((line) => /^\d+[.．]/.test(line))) {
+    const list = document.createElement("ol");
+    list.className = "answer-result-list";
+    section.lines.forEach((line) => {
+      const item = document.createElement("li");
+      item.textContent = line.replace(/^\d+[.．]\s*/, "");
+      list.appendChild(item);
+    });
+    article.appendChild(list);
+    return article;
+  }
+
+  const body = document.createElement("p");
+  body.className = "answer-section-body";
+  body.textContent = section.lines.join("\n");
+  article.appendChild(body);
+  return article;
+}
+
+function renderStructuredAnswer(answerText) {
+  const wrapper = document.createElement("section");
+  wrapper.className = "structured-answer";
+  const sections = parseAnswerSections(answerText);
+  if (sections.length === 0) {
+    const fallback = document.createElement("p");
+    fallback.className = "answer-text";
+    fallback.textContent = answerText || "";
+    wrapper.appendChild(fallback);
+    return wrapper;
+  }
+  sections.forEach((section) => wrapper.appendChild(renderAnswerSection(section)));
+  return wrapper;
+}
+
 function renderAssistantResponse(bubble, data) {
   bubble.textContent = "";
-  const answer = document.createElement("p");
-  answer.className = "answer-text";
-  answer.textContent = data.answer || "";
-  bubble.appendChild(answer);
+  bubble.appendChild(renderStructuredAnswer(data.answer || ""));
 
   const citations = (data.results || []).map((result) => result.citation).filter(Boolean);
   if (citations.length === 0) return;
@@ -46,7 +124,7 @@ function renderAssistantResponse(bubble, data) {
   const section = document.createElement("section");
   section.className = "answer-citations";
   const title = document.createElement("strong");
-  title.textContent = "来源";
+  title.textContent = "来源依据";
   const list = document.createElement("ul");
   citations.forEach((citation) => {
     const item = document.createElement("li");
@@ -55,24 +133,37 @@ function renderAssistantResponse(bubble, data) {
     label.textContent = citation.citation_id || "来源";
     item.appendChild(label);
 
+    const sourceTitle = citation.title || citation.source || citation.url || "未命名来源";
     if (citation.url) {
       const link = document.createElement("a");
+      link.className = "answer-source-title";
       link.href = citation.url;
       link.target = "_blank";
       link.rel = "noreferrer";
-      link.textContent = citation.title || citation.source || citation.url;
+      link.textContent = sourceTitle;
       item.appendChild(link);
     } else {
       const text = document.createElement("span");
-      text.textContent = citation.title || citation.source || "未命名来源";
+      text.className = "answer-source-title";
+      text.textContent = sourceTitle;
       item.appendChild(text);
     }
 
-    const meta = [citation.category, citation.publish_date].filter(Boolean).join(" / ");
-    if (meta) {
+    const metaParts = [citation.category, citation.publish_date, citation.source ? `位置：${citation.source}` : null].filter(Boolean);
+    if (metaParts.length > 0) {
       const metaText = document.createElement("small");
-      metaText.textContent = meta;
+      metaText.textContent = metaParts.join(" / ");
       item.appendChild(metaText);
+    }
+
+    if (citation.url) {
+      const sourceLink = document.createElement("a");
+      sourceLink.className = "answer-source-link";
+      sourceLink.href = citation.url;
+      sourceLink.target = "_blank";
+      sourceLink.rel = "noreferrer";
+      sourceLink.textContent = "打开来源";
+      item.appendChild(sourceLink);
     }
     list.appendChild(item);
   });

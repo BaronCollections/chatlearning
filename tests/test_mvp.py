@@ -98,3 +98,10 @@ def test_sample_policy_chunks_cover_absenteeism_rule_demo():
     assert "记过处分" in texts
     assert "4.2旷工少于三天" in texts
     assert "二类违规行为" in texts
+
+
+def test_sample_policy_chunks_include_demo_source_urls_for_policy_links():
+    chunks = {chunk.chunk_id: chunk for chunk in sample_policy_chunks()}
+
+    assert chunks["attendance-absence-penalty-001"].metadata["source_url"] == "https://work.yungu.org/policyDetail/11"
+    assert chunks["discipline-absence-classification-001"].metadata["source_url"] == "https://work.yungu.org/policyDetail/16"

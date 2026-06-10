@@ -222,3 +222,25 @@ def test_workflow_marks_all_production_rag_enhancements_and_current_upgrades():
     assert ".enhancement-status-badge.status-interface" in app_css
     assert ".enhancement-status-badge.status-planned" in app_css
     assert ".enhancement-detail" in app_css
+
+
+def test_chat_answer_uses_structured_sections_and_linked_sources():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    app_css = (WEB_DIR / "app.css").read_text(encoding="utf-8")
+
+    assert "renderStructuredAnswer" in app_js
+    assert "parseAnswerSections" in app_js
+    assert "answer-section" in app_js
+    assert "answer-section-title" in app_js
+    assert "answer-section-body" in app_js
+    assert "处理结果" in app_js
+    assert "不确定性提醒" in app_js
+    assert "来源依据" in app_js
+    assert "answer-source-link" in app_js
+    assert "打开来源" in app_js
+
+    assert ".structured-answer" in app_css
+    assert ".answer-section" in app_css
+    assert ".answer-section-title" in app_css
+    assert ".answer-result-list" in app_css
+    assert ".answer-source-link" in app_css
