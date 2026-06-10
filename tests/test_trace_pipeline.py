@@ -468,6 +468,13 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
         "注：连续旷工3个工作日以下的，扣除旷工期间工资，并给予记过处分；"
         "连续旷工3个工作日及以上的，或一年内累计两次及以上旷工的，扣除旷工期间工资，并给予辞退处分。"
     )
+    classification_text = (
+        "7.6 擅自携带违禁品进入工作场所。任何其他经学校制度委员会确定为一类违规行为的行为。"
+        "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、破坏学校管理秩序等"
+        "致使学校经济、形象、声誉遭受严重损害的行为。"
+        "4. 破坏学校管理秩序行为 4.1渎职给学校造成较大损失。4.2旷工少于三天。"
+        "（三）三类违规行为 三类违规行为：指一般的违规行为。"
+    )
     student_text = (
         "学生红黄灯行为处理办法。严重违纪可给予记过处分、停课、停学等教育惩戒措施。"
     )
@@ -489,6 +496,23 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
                         metadata={"title": "云谷学校小学部红黄灯行为及处理办法", "policy_category_type_name": "中小学教育教学相关制度"},
                     ),
                     distance=0.05,
+                ),
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="discipline-classification",
+                        doc_id="yungu-policy-16",
+                        block_id="chunk-0004",
+                        text=classification_text,
+                        heading_path=["云谷人守则-员工纪律制度"],
+                        metadata={
+                            "source": "yungu_policy_system",
+                            "import_information_id": 16,
+                            "title": "云谷人守则-员工纪律制度",
+                            "policy_category_type_name": "云谷人守则",
+                            "source_url": "https://work.yungu.org/policyDetail/16",
+                        },
+                    ),
+                    distance=0.18,
                 ),
                 SearchResult(
                     chunk=PolicyChunk(
@@ -521,15 +545,25 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
     assert filters["target_behavior"] == "absenteeism"
     assert filters["behavior_duration"] == {"value": 2, "unit": "day"}
     assert "连续旷工3个工作日以下" in filters["target_terms"]
+    assert "旷工少于三天" in filters["target_terms"]
+    assert "二类违规行为" in filters["target_terms"]
     rewrite = _step(response, "query_rewrite")
     assert "连续旷工3个工作日以下" in rewrite["details"]["expanded_query"]
+    assert "属于二类违规行为" in response["answer"]
+    assert "属于一类违规行为" not in response["answer"]
+    assert "三类违规行为" not in response["answer"]
+    assert "破坏学校管理秩序行为" in response["answer"]
+    assert "4.2旷工少于三天" in response["answer"]
     assert "扣除旷工期间工资，并给予记过处分" in response["answer"]
+    assert "连续旷工3个工作日及以上" not in response["answer"]
+    assert "辞退处分" not in response["answer"]
     assert "学生红黄灯行为处理办法" not in response["answer"]
     assert response["results"][0]["chunk_id"] == "worktime-absenteeism"
+    assert response["results"][1]["chunk_id"] == "discipline-classification"
     rerank = _step(response, "rerank")
     assert "命中行为对象" in rerank["details"]["rerank_comparison"][0]["reason"]
     evidence = _step(response, "evidence_quality")
-    assert evidence["details"]["target_evidence_filter"]["output_count"] == 1
+    assert evidence["details"]["target_evidence_filter"]["output_count"] == 2
 
 
 

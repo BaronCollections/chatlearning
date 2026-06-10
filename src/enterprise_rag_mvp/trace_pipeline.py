@@ -287,18 +287,28 @@ ABSENTEEISM_BEHAVIOR_TERMS = [
 ]
 ABSENTEEISM_UNDER_THREE_TERMS = [
     "连续旷工3个工作日以下",
+    "旷工少于三天",
+    "二类违规行为",
+    "破坏学校管理秩序行为",
+    "员工纪律制度",
+    "云谷人守则-员工纪律制度",
     "扣除旷工期间工资",
     "记过处分",
 ]
 ABSENTEEISM_THREE_OR_MORE_TERMS = [
     "连续旷工3个工作日及以上",
     "一年内累计两次及以上旷工",
+    "一类违规行为",
+    "员工纪律制度",
+    "云谷人守则-员工纪律制度",
     "扣除旷工期间工资",
     "辞退处分",
 ]
 ABSENTEEISM_POLICY_TITLE_TERMS = [
     "工作时间及假期管理制度",
     "云谷人守则-工作时间及假期管理制度",
+    "员工纪律制度",
+    "云谷人守则-员工纪律制度",
 ]
 CHINESE_NUMBER_MAP = {
     "零": 0,
@@ -666,6 +676,10 @@ def _has_aspect_signal(text: str, understanding: dict[str, Any]) -> bool:
     return any(term in text for term in _aspect_terms(understanding.get("asked_aspect")))
 
 
+def _has_violation_classification_signal(text: str) -> bool:
+    return any(term in text for term in ["一类违规行为", "二类违规行为", "三类违规行为", "破坏学校管理秩序行为"])
+
+
 def _is_direct_target_evidence(result: SearchResult, understanding: dict[str, Any]) -> bool:
     if understanding.get("retrieval_intent") != "exact_policy_lookup":
         return True
@@ -673,6 +687,10 @@ def _is_direct_target_evidence(result: SearchResult, understanding: dict[str, An
     metadata = result.chunk.metadata or {}
     if _is_reference_only_text(text, understanding):
         return False
+    if understanding.get("target_behavior") == ABSENTEEISM_BEHAVIOR:
+        return _has_target_marker(text, understanding) and (
+            _has_aspect_signal(text, understanding) or _has_violation_classification_signal(text)
+        )
     if understanding.get("asked_aspect") == DISCIPLINARY_ACTION_ASPECT:
         return _has_target_marker(text, understanding) and _has_aspect_signal(text, understanding)
     target_clause = understanding.get("target_clause")
@@ -943,7 +961,14 @@ def _extract_scoped_text(text: str, understanding: dict[str, Any]) -> tuple[str,
         end_index, end_marker = _find_first_marker(text, end_markers, start=start_index + len(start_marker or ""))
     elif target_behavior == ABSENTEEISM_BEHAVIOR:
         threshold = understanding.get("behavior_threshold")
-        if threshold == "continuous_absence_under_3_workdays":
+        if (
+            threshold == "continuous_absence_under_3_workdays"
+            and "旷工少于三天" in text
+            and _has_violation_classification_signal(text)
+        ):
+            start_markers = ["（二）二类违规行为", "(二)二类违规行为", "二类违规行为：", "二类违规行为"]
+            end_markers = ["（三）三类违规行为", "(三)三类违规行为", "三类违规行为"]
+        elif threshold == "continuous_absence_under_3_workdays":
             start_markers = ["连续旷工3个工作日以下", "连续旷工 3 个工作日以下", "旷工3个工作日以下"]
             end_markers = ["连续旷工3个工作日及以上", "连续旷工 3 个工作日及以上", "考勤结果", "五、假期标准"]
         elif threshold == "continuous_absence_3_or_more_workdays":
@@ -1151,18 +1176,16 @@ def _serialize_result(result: SearchResult, index: int = 1) -> dict[str, Any]:
     }
 
 
-def _compose_answer(results: list[SearchResult], retrieval_mode: str) -> str:
-    if not results:
-        return "没有在当前制度样本中检索到足够相关的内容。"
-
-    best = results[0].chunk
-    best_citation = _citation_for_result(results[0], 1)
+def _mode_label(retrieval_mode: str) -> str:
     mode_labels = {
         "pgvector_hybrid": "pgvector hybrid",
         "pgvector": "pgvector",
         "in_memory_demo": "内存向量检索 demo",
     }
-    mode_label = mode_labels.get(retrieval_mode, retrieval_mode)
+    return mode_labels.get(retrieval_mode, retrieval_mode)
+
+
+def _source_lines(results: list[SearchResult]) -> list[str]:
     source_lines = []
     for index, result in enumerate(results, start=1):
         citation = _citation_for_result(result, index)
@@ -1172,13 +1195,88 @@ def _compose_answer(results: list[SearchResult], retrieval_mode: str) -> str:
         location = citation.get("url") or citation.get("source") or citation.get("doc_id")
         location_label = "链接" if has_url else "位置"
         source_lines.append(f"{citation['citation_id']}《{citation['title']}》{meta} {location_label}：{location}")
+    return source_lines
 
+
+def _find_absenteeism_penalty_result(results: list[SearchResult]) -> SearchResult | None:
+    for result in results:
+        text = result.chunk.text
+        if "旷工" in text and any(term in text for term in ["扣除旷工期间工资", "记过处分", "辞退处分"]):
+            return result
+    return None
+
+
+def _find_absenteeism_classification_result(results: list[SearchResult]) -> SearchResult | None:
+    for result in results:
+        text = result.chunk.text
+        if "旷工" in text and _has_violation_classification_signal(text):
+            return result
+    return None
+
+
+def _absenteeism_classification_label(result: SearchResult | None) -> str | None:
+    if result is None:
+        return None
+    text = result.chunk.text
+    clause_match = re.search(r"(\d+\.\s*\d+\s*旷工少于三天)", text)
+    clause = clause_match.group(1).replace(". ", ".") if clause_match else None
+    category_scan_end = clause_match.start() if clause_match else len(text)
+    category_positions = [
+        (text.rfind(candidate, 0, category_scan_end), candidate)
+        for candidate in ["一类违规行为", "二类违规行为", "三类违规行为"]
+    ]
+    category_positions = [(index, candidate) for index, candidate in category_positions if index >= 0]
+    if category_positions:
+        category = max(category_positions, key=lambda item: item[0])[1]
+    else:
+        category = next((candidate for candidate in ["一类违规行为", "二类违规行为", "三类违规行为"] if candidate in text), None)
+    if not category:
+        return None
+    if "破坏学校管理秩序行为" in text and clause:
+        return f"属于{category}中的破坏学校管理秩序行为（{clause}）"
+    if clause:
+        return f"属于{category}（{clause}）"
+    return f"属于{category}"
+
+
+def _compose_absenteeism_answer(results: list[SearchResult], retrieval_mode: str) -> str | None:
+    penalty_result = _find_absenteeism_penalty_result(results)
+    classification_result = _find_absenteeism_classification_result(results)
+    classification_label = _absenteeism_classification_label(classification_result)
+    if penalty_result is None or classification_label is None:
+        return None
+
+    penalty_index = results.index(penalty_result) + 1
+    classification_index = results.index(classification_result) + 1
+    penalty_citation = _citation_for_result(penalty_result, penalty_index)
+    classification_citation = _citation_for_result(classification_result, classification_index)
+    return (
+        f"我在制度库中返回了 {len(results)} 条候选片段。"
+        f"根据 {classification_citation['citation_id']}《{classification_citation['title']}》，旷工两天{classification_label}；"
+        f"根据 {penalty_citation['citation_id']}《{penalty_citation['title']}》，处理结果是：{penalty_result.chunk.text}\n\n"
+        "相关来源：\n"
+        + "\n".join(_source_lines(results))
+        + f"\n检索方式：{_mode_label(retrieval_mode)}。"
+    )
+
+
+def _compose_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any] | None = None) -> str:
+    if not results:
+        return "没有在当前制度样本中检索到足够相关的内容。"
+
+    if (understanding or {}).get("target_behavior") == ABSENTEEISM_BEHAVIOR:
+        absenteeism_answer = _compose_absenteeism_answer(results, retrieval_mode)
+        if absenteeism_answer:
+            return absenteeism_answer
+
+    best = results[0].chunk
+    best_citation = _citation_for_result(results[0], 1)
     return (
         f"我在制度库中返回了 {len(results)} 条候选片段。优先依据 {best_citation['citation_id']}"
         f"《{best_citation['title']}》：{best.text}\n\n"
         "相关来源：\n"
-        + "\n".join(source_lines)
-        + f"\n检索方式：{mode_label}。"
+        + "\n".join(_source_lines(results))
+        + f"\n检索方式：{_mode_label(retrieval_mode)}。"
     )
 
 
@@ -2008,7 +2106,7 @@ def run_chat_trace(
     )
 
     start = time.perf_counter()
-    answer = _compose_answer(final_results, retrieval_mode)
+    answer = _compose_answer(final_results, retrieval_mode, understanding)
     observations = _langfuse_observations(trace_id, retrieval_mode, len(final_results))
     steps.append(
         _step(
