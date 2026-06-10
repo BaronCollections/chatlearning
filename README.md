@@ -206,6 +206,51 @@ PgVectorStore("postgresql://127.0.0.1:5432/enterprise_rag_mvp").upsert_chunks(ch
 
 生产导入还需要补齐：分页重试、限流、断点续跑、重复文档检测、删除同步、权限过滤、附件解析、数据脱敏、导入日志和失败告警。
 
+
+## 直接接入云谷制度数据
+
+仓库提供了 `ingest-yungu-policies` 命令，用于读取云谷制度列表、逐篇拉取详情正文、清洗 HTML、切 chunk、调用 embedding 服务，并写入 pgvector。
+
+SESSION 不要写进代码或 README，建议只放在当前终端环境变量里：
+
+```bash
+export YUNGU_SESSION='只在本机终端设置，不要提交到仓库'
+```
+
+先做 dry-run，只拉取和切块，不调用 embedding、不写数据库：
+
+```bash
+YUNGU_SESSION="$YUNGU_SESSION" \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+  --dry-run \
+  --max-docs 2 \
+  --page-size 20
+```
+
+确认 dry-run 后再写入 pgvector。默认仍然只导入 2 篇，避免误全量：
+
+```bash
+YUNGU_SESSION="$YUNGU_SESSION" \
+RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+  --max-docs 2 \
+  --page-size 20
+```
+
+如果要按分类导入，可以加 `--category-id`。如果明确要全量导入，必须显式使用 `--all`：
+
+```bash
+YUNGU_SESSION="$YUNGU_SESSION" \
+RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+  --category-id 11 \
+  --all
+```
+
+导入器会写入这些 metadata：`source`、`import_information_id`、`title`、`publish_date`、`policy_category_type`、`policy_category_type_name`、`policy_system_type`、`create_user_name`、`file_count`。
+
 ## 隐私与发布边界
 
 这个仓库只应该包含代码、公开样例和说明文档。
