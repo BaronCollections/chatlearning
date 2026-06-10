@@ -238,7 +238,30 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
   --page-size 20
 ```
 
-如果要按分类导入，可以加 `--category-id`。如果明确要全量导入，必须显式使用 `--all`：
+如果要按所有分类分页处理，使用 `--all-categories`。不加 `--all` 时仍然是安全模式：每个分类最多处理 `--max-docs` 篇，适合先验证分类、分页和详情结构。
+
+```bash
+YUNGU_SESSION="$YUNGU_SESSION" \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+  --all-categories \
+  --dry-run \
+  --max-docs 2 \
+  --page-size 20
+```
+
+确认 dry-run 报告后，再显式使用 `--all-categories --all` 做全分类导入：
+
+```bash
+YUNGU_SESSION="$YUNGU_SESSION" \
+RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+  --all-categories \
+  --all \
+  --page-size 20
+```
+
+如果只导入一个分类，可以继续使用 `--category-id`。如果明确要导入该分类全部文档，也必须显式使用 `--all`：
 
 ```bash
 YUNGU_SESSION="$YUNGU_SESSION" \
@@ -248,6 +271,8 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
   --category-id 11 \
   --all
 ```
+
+按分类导入完成后，命令会输出分类级报告：分类数量、每个分类的接口 total、读取页数、处理文档数、导入/跳过数量、chunk 数，以及每篇制度的 `importInformationId`、标题、状态和 chunk 数。报告不会打印制度正文。
 
 导入器会写入这些 metadata：`source`、`import_information_id`、`title`、`publish_date`、`policy_category_type`、`policy_category_type_name`、`policy_system_type`、`create_user_name`、`file_count`。
 

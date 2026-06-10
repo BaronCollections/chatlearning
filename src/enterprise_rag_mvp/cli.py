@@ -7,7 +7,14 @@ from enterprise_rag_mvp.embedding_client import EmbeddingClient
 from enterprise_rag_mvp.pgvector_store import PgVectorStore
 from enterprise_rag_mvp.render import render_results
 from enterprise_rag_mvp.samples import sample_policy_chunks
-from enterprise_rag_mvp.yungu_importer import DEFAULT_POLICY_TYPE, DEFAULT_YUNGU_BASE_URL, YunguPolicyClient, ingest_yungu_policies
+from enterprise_rag_mvp.yungu_importer import (
+    DEFAULT_POLICY_TYPE,
+    DEFAULT_YUNGU_BASE_URL,
+    YunguCategoryImportSummary,
+    YunguPolicyClient,
+    ingest_yungu_categories,
+    ingest_yungu_policies,
+)
 
 DEFAULT_DSN = "postgresql://127.0.0.1:5432/enterprise_rag_mvp"
 DEFAULT_EMBEDDING_URL = "http://127.0.0.1:8001"
@@ -46,6 +53,46 @@ def _yungu_session(args: argparse.Namespace) -> str:
     return session.strip()
 
 
+def render_yungu_category_summary(summary: YunguCategoryImportSummary, *, dry_run: bool) -> str:
+    stats = summary.stats
+    action = "Prepared" if dry_run else "Ingested"
+    chunk_label = "prepared" if dry_run else "stored"
+    lines = [
+        (
+            f"{action} Yungu policy categories: "
+            f"categories={summary.category_count}, "
+            f"documents_seen={stats.documents_seen}, "
+            f"documents_imported={stats.documents_imported}, "
+            f"documents_skipped={stats.documents_skipped}, "
+            f"chunks_{chunk_label}={stats.chunks_stored}, "
+            f"pages_read={stats.pages_read}"
+        )
+    ]
+    for index, report in enumerate(summary.categories, start=1):
+        category = report.category
+        category_id = category.category_id if category else "-"
+        name = category.name if category else "未分类"
+        ename = f" / {category.ename}" if category and category.ename else ""
+        lines.append(
+            f"[{index}/{summary.category_count}] category_id={category_id} {name}{ename}: "
+            f"total={report.total_available}, "
+            f"pages_read={report.stats.pages_read}, "
+            f"seen={report.stats.documents_seen}, "
+            f"imported={report.stats.documents_imported}, "
+            f"skipped={report.stats.documents_skipped}, "
+            f"chunks={report.stats.chunks_stored}"
+        )
+        for document in report.documents:
+            reason = f" reason={document.reason}" if document.reason else ""
+            lines.append(
+                f"  - id={document.import_information_id} "
+                f"status={document.status} "
+                f"chunks={document.chunk_count} "
+                f"title={document.title}{reason}"
+            )
+    return "\n".join(lines)
+
+
 def ingest_yungu(args: argparse.Namespace) -> None:
     max_docs = None if args.all else args.max_docs
     yungu_client = YunguPolicyClient(
@@ -53,11 +100,31 @@ def ingest_yungu(args: argparse.Namespace) -> None:
         base_url=args.base_url,
         timeout=args.timeout,
     )
+    embedding_client = EmbeddingClient(base_url=_embedding_url(args))
+    store = PgVectorStore(_dsn(args))
     try:
+        if args.all_categories:
+            summary = ingest_yungu_categories(
+                client=yungu_client,
+                embedding_client=embedding_client,
+                store=store,
+                policy_type=args.policy_type,
+                page_size=args.page_size,
+                max_docs_per_category=max_docs,
+                max_pages_per_category=args.max_pages,
+                chunk_max_chars=args.chunk_max_chars,
+                chunk_overlap_chars=args.chunk_overlap_chars,
+                embedding_batch_size=args.embedding_batch_size,
+                keyword=args.keyword,
+                dry_run=args.dry_run,
+            )
+            print(render_yungu_category_summary(summary, dry_run=args.dry_run))
+            return
+
         stats = ingest_yungu_policies(
             client=yungu_client,
-            embedding_client=EmbeddingClient(base_url=_embedding_url(args)),
-            store=PgVectorStore(_dsn(args)),
+            embedding_client=embedding_client,
+            store=store,
             policy_type=args.policy_type,
             category_id=args.category_id,
             page_size=args.page_size,
@@ -112,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     yungu_parser.add_argument("--max-docs", type=int, default=2, help="Safety default: only import 2 docs unless --all is set")
     yungu_parser.add_argument("--max-pages", type=int)
     yungu_parser.add_argument("--all", action="store_true", help="Import all matching policies instead of the safety-limited --max-docs")
+    yungu_parser.add_argument("--all-categories", action="store_true", help="Read policySystemTypeList and import each category with a category-level report")
     yungu_parser.add_argument("--chunk-max-chars", type=int, default=1200)
     yungu_parser.add_argument("--chunk-overlap-chars", type=int, default=150)
     yungu_parser.add_argument("--embedding-batch-size", type=int, default=16)

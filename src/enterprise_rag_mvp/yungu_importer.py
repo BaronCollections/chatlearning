@@ -28,12 +28,55 @@ class YunguInformationPage:
 
 
 @dataclass(frozen=True)
+class YunguCategory:
+    category_id: int
+    name: str
+    ename: str | None = None
+
+
+@dataclass(frozen=True)
 class YunguImportStats:
     documents_seen: int = 0
     documents_imported: int = 0
     documents_skipped: int = 0
     chunks_stored: int = 0
     pages_read: int = 0
+
+
+@dataclass(frozen=True)
+class YunguProcessedDocument:
+    import_information_id: Any
+    title: str
+    status: str
+    chunk_count: int = 0
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class YunguPolicyIngestReport:
+    category: YunguCategory | None
+    total_available: int
+    stats: YunguImportStats
+    documents: list[YunguProcessedDocument]
+
+
+@dataclass(frozen=True)
+class YunguCategoryImportSummary:
+    categories: list[YunguPolicyIngestReport]
+
+    @property
+    def category_count(self) -> int:
+        return len(self.categories)
+
+    @property
+    def stats(self) -> YunguImportStats:
+        return YunguImportStats(
+            documents_seen=sum(report.stats.documents_seen for report in self.categories),
+            documents_imported=sum(report.stats.documents_imported for report in self.categories),
+            documents_skipped=sum(report.stats.documents_skipped for report in self.categories),
+            chunks_stored=sum(report.stats.chunks_stored for report in self.categories),
+            pages_read=sum(report.stats.pages_read for report in self.categories),
+        )
 
 
 class EmbeddingLike(Protocol):
@@ -155,6 +198,24 @@ def _metadata_value(detail: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _int_or_none(value: Any) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _category_from_raw(raw: dict[str, Any]) -> YunguCategory | None:
+    category_id = _int_or_none(_metadata_value(raw, "categoryTypeId", "policyCategoryType", "categoryId", "id"))
+    if category_id is None:
+        return None
+    name = _first_non_empty(raw.get("categoryName"), raw.get("name"), fallback=f"category-{category_id}")
+    ename = _first_non_empty(raw.get("categoryEname"), raw.get("ename"), raw.get("englishName"))
+    return YunguCategory(category_id=category_id, name=name, ename=ename or None)
+
+
 def detail_to_policy_chunks(
     detail: dict[str, Any],
     *,
@@ -253,6 +314,34 @@ class YunguPolicyClient:
             raise YunguApiError(f"Yungu API error for {path}: {message}")
         return payload
 
+    def fetch_policy_categories(self, *, policy_type: int = DEFAULT_POLICY_TYPE) -> list[YunguCategory]:
+        payload = self._get_json("/api/import/policySystemTypeList", params={"policyType": policy_type})
+        content = payload.get("content") or []
+        if isinstance(content, dict):
+            systems = [content]
+        elif isinstance(content, list):
+            systems = content
+        else:
+            raise YunguApiError("policySystemTypeList content must be a list or object")
+
+        categories: list[YunguCategory] = []
+        seen_ids: set[int] = set()
+        for system in systems:
+            if not isinstance(system, dict):
+                continue
+            raw_categories = system.get("categoryList") or system.get("policyCategoryList") or []
+            if not isinstance(raw_categories, list):
+                continue
+            for raw_category in raw_categories:
+                if not isinstance(raw_category, dict):
+                    continue
+                category = _category_from_raw(raw_category)
+                if category is None or category.category_id in seen_ids:
+                    continue
+                seen_ids.add(category.category_id)
+                categories.append(category)
+        return categories
+
     def fetch_information_page(
         self,
         *,
@@ -312,6 +401,166 @@ def _row_import_id(row: dict[str, Any]) -> Any:
     return _metadata_value(row, "importInformationId", "id")
 
 
+def _stats(
+    *,
+    documents_seen: int,
+    documents_imported: int,
+    documents_skipped: int,
+    chunks_stored: int,
+    pages_read: int,
+) -> YunguImportStats:
+    return YunguImportStats(
+        documents_seen=documents_seen,
+        documents_imported=documents_imported,
+        documents_skipped=documents_skipped,
+        chunks_stored=chunks_stored,
+        pages_read=pages_read,
+    )
+
+
+def _title_from_row_or_detail(row: dict[str, Any], detail: dict[str, Any] | None, import_id: Any) -> str:
+    detail = detail or {}
+    return _first_non_empty(
+        detail.get("cnTitle"),
+        detail.get("title"),
+        detail.get("enTitle"),
+        row.get("cnTitle"),
+        row.get("title"),
+        row.get("enTitle"),
+        fallback=f"policy-{import_id}",
+    )
+
+
+def ingest_yungu_policy_report(
+    *,
+    client: Any,
+    embedding_client: EmbeddingLike,
+    store: StoreLike,
+    policy_type: int = DEFAULT_POLICY_TYPE,
+    category: YunguCategory | None = None,
+    category_id: int | None = None,
+    page_size: int = 50,
+    max_docs: int | None = None,
+    max_pages: int | None = None,
+    chunk_max_chars: int = 1200,
+    chunk_overlap_chars: int = 150,
+    embedding_batch_size: int = 16,
+    keyword: str = "",
+    dry_run: bool = False,
+    continue_on_error: bool = True,
+) -> YunguPolicyIngestReport:
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    if max_docs is not None and max_docs <= 0:
+        raise ValueError("max_docs must be positive when provided")
+    if max_pages is not None and max_pages <= 0:
+        raise ValueError("max_pages must be positive when provided")
+    if category is not None and category_id is not None and category.category_id != category_id:
+        raise ValueError("category and category_id disagree")
+
+    effective_category_id = category.category_id if category is not None else category_id
+    effective_category = category or (
+        YunguCategory(category_id=effective_category_id, name=f"category-{effective_category_id}")
+        if effective_category_id is not None
+        else None
+    )
+
+    documents_seen = 0
+    documents_imported = 0
+    documents_skipped = 0
+    chunks_stored = 0
+    pages_read = 0
+    page_num = 1
+    total_pages: int | None = None
+    total_available = 0
+    documents: list[YunguProcessedDocument] = []
+
+    while True:
+        if max_pages is not None and pages_read >= max_pages:
+            break
+        page = client.fetch_information_page(
+            page_num=page_num,
+            page_size=page_size,
+            policy_type=policy_type,
+            category_id=effective_category_id,
+            keyword=keyword,
+        )
+        pages_read += 1
+        if total_available == 0:
+            total_available = page.total
+        if total_pages is None:
+            total_pages = max(1, math.ceil(page.total / page_size)) if page.total else 1
+
+        if not page.rows:
+            break
+
+        for row in page.rows:
+            if max_docs is not None and documents_seen >= max_docs:
+                return YunguPolicyIngestReport(
+                    category=effective_category,
+                    total_available=total_available,
+                    stats=_stats(
+                        documents_seen=documents_seen,
+                        documents_imported=documents_imported,
+                        documents_skipped=documents_skipped,
+                        chunks_stored=chunks_stored,
+                        pages_read=pages_read,
+                    ),
+                    documents=documents,
+                )
+
+            import_id = _row_import_id(row)
+            documents_seen += 1
+            if import_id is None:
+                documents_skipped += 1
+                documents.append(YunguProcessedDocument(None, _title_from_row_or_detail(row, None, "unknown"), "skipped", reason="missing importInformationId"))
+                continue
+
+            detail: dict[str, Any] | None = None
+            try:
+                detail = client.fetch_detail(import_id)
+                chunks = detail_to_policy_chunks(detail, max_chars=chunk_max_chars, overlap_chars=chunk_overlap_chars)
+                title = _title_from_row_or_detail(row, detail, import_id)
+                if not chunks:
+                    documents_skipped += 1
+                    documents.append(YunguProcessedDocument(import_id, title, "skipped", reason="empty cleaned body"))
+                    continue
+
+                if dry_run:
+                    chunks_stored += len(chunks)
+                else:
+                    for batch in _batched(chunks, embedding_batch_size):
+                        embeddings = embedding_client.embed([chunk.text for chunk in batch], input_type="document")
+                        store.upsert_chunks(batch, embeddings)
+                        chunks_stored += len(batch)
+
+                documents_imported += 1
+                documents.append(YunguProcessedDocument(import_id, title, "imported", chunk_count=len(chunks)))
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                documents_skipped += 1
+                title = _title_from_row_or_detail(row, detail, import_id)
+                documents.append(YunguProcessedDocument(import_id, title, "error", reason=f"{type(exc).__name__}: {exc}"))
+
+        if page_num >= total_pages:
+            break
+        page_num += 1
+
+    return YunguPolicyIngestReport(
+        category=effective_category,
+        total_available=total_available,
+        stats=_stats(
+            documents_seen=documents_seen,
+            documents_imported=documents_imported,
+            documents_skipped=documents_skipped,
+            chunks_stored=chunks_stored,
+            pages_read=pages_read,
+        ),
+        documents=documents,
+    )
+
+
 def ingest_yungu_policies(
     *,
     client: Any,
@@ -328,66 +577,64 @@ def ingest_yungu_policies(
     keyword: str = "",
     dry_run: bool = False,
 ) -> YunguImportStats:
+    report = ingest_yungu_policy_report(
+        client=client,
+        embedding_client=embedding_client,
+        store=store,
+        policy_type=policy_type,
+        category_id=category_id,
+        page_size=page_size,
+        max_docs=max_docs,
+        max_pages=max_pages,
+        chunk_max_chars=chunk_max_chars,
+        chunk_overlap_chars=chunk_overlap_chars,
+        embedding_batch_size=embedding_batch_size,
+        keyword=keyword,
+        dry_run=dry_run,
+    )
+    return report.stats
+
+
+def ingest_yungu_categories(
+    *,
+    client: Any,
+    embedding_client: EmbeddingLike,
+    store: StoreLike,
+    policy_type: int = DEFAULT_POLICY_TYPE,
+    categories: list[YunguCategory] | None = None,
+    page_size: int = 50,
+    max_docs_per_category: int | None = None,
+    max_pages_per_category: int | None = None,
+    chunk_max_chars: int = 1200,
+    chunk_overlap_chars: int = 150,
+    embedding_batch_size: int = 16,
+    keyword: str = "",
+    dry_run: bool = False,
+) -> YunguCategoryImportSummary:
     if page_size <= 0:
         raise ValueError("page_size must be positive")
-    if max_docs is not None and max_docs <= 0:
-        raise ValueError("max_docs must be positive when provided")
-    if max_pages is not None and max_pages <= 0:
-        raise ValueError("max_pages must be positive when provided")
+    if max_docs_per_category is not None and max_docs_per_category <= 0:
+        raise ValueError("max_docs_per_category must be positive when provided")
+    if max_pages_per_category is not None and max_pages_per_category <= 0:
+        raise ValueError("max_pages_per_category must be positive when provided")
 
-    documents_seen = 0
-    documents_imported = 0
-    documents_skipped = 0
-    chunks_stored = 0
-    pages_read = 0
-    page_num = 1
-    total_pages: int | None = None
-
-    while True:
-        if max_pages is not None and pages_read >= max_pages:
-            break
-        page = client.fetch_information_page(
-            page_num=page_num,
-            page_size=page_size,
+    effective_categories = categories if categories is not None else client.fetch_policy_categories(policy_type=policy_type)
+    reports = [
+        ingest_yungu_policy_report(
+            client=client,
+            embedding_client=embedding_client,
+            store=store,
             policy_type=policy_type,
-            category_id=category_id,
+            category=category,
+            page_size=page_size,
+            max_docs=max_docs_per_category,
+            max_pages=max_pages_per_category,
+            chunk_max_chars=chunk_max_chars,
+            chunk_overlap_chars=chunk_overlap_chars,
+            embedding_batch_size=embedding_batch_size,
             keyword=keyword,
+            dry_run=dry_run,
         )
-        pages_read += 1
-        if total_pages is None:
-            total_pages = max(1, math.ceil(page.total / page_size)) if page.total else 1
-
-        if not page.rows:
-            break
-
-        for row in page.rows:
-            if max_docs is not None and documents_seen >= max_docs:
-                return YunguImportStats(documents_seen, documents_imported, documents_skipped, chunks_stored, pages_read)
-            import_id = _row_import_id(row)
-            if import_id is None:
-                documents_seen += 1
-                documents_skipped += 1
-                continue
-
-            documents_seen += 1
-            detail = client.fetch_detail(import_id)
-            chunks = detail_to_policy_chunks(detail, max_chars=chunk_max_chars, overlap_chars=chunk_overlap_chars)
-            if not chunks:
-                documents_skipped += 1
-                continue
-            documents_imported += 1
-
-            if dry_run:
-                chunks_stored += len(chunks)
-                continue
-
-            for batch in _batched(chunks, embedding_batch_size):
-                embeddings = embedding_client.embed([chunk.text for chunk in batch], input_type="document")
-                store.upsert_chunks(batch, embeddings)
-                chunks_stored += len(batch)
-
-        if page_num >= total_pages:
-            break
-        page_num += 1
-
-    return YunguImportStats(documents_seen, documents_imported, documents_skipped, chunks_stored, pages_read)
+        for category in effective_categories
+    ]
+    return YunguCategoryImportSummary(categories=reports)

@@ -6,10 +6,12 @@ from enterprise_rag_mvp.cli import build_parser
 from enterprise_rag_mvp.models import PolicyChunk
 from enterprise_rag_mvp.yungu_importer import (
     YunguApiError,
+    YunguCategory,
     YunguPolicyClient,
     clean_html_to_text,
     chunk_text,
     detail_to_policy_chunks,
+    ingest_yungu_categories,
     ingest_yungu_policies,
 )
 
@@ -172,6 +174,81 @@ def test_ingest_yungu_policies_fetches_details_embeds_and_stores_chunks():
     assert embedding_client.texts == [chunk.text for chunk in store.saved]
 
 
+class FakeCategoryYunguClient:
+    def __init__(self):
+        self.page_calls = []
+        self.detail_calls = []
+
+    def fetch_policy_categories(self, *, policy_type):
+        assert policy_type == 2
+        return [
+            YunguCategory(category_id=8, name="后勤制度", ename="Logistics Policy and Rules"),
+            YunguCategory(category_id=11, name="HR政策及知识库", ename="HR Policy and Knowledge Base"),
+        ]
+
+    def fetch_information_page(self, *, page_num, page_size, policy_type, category_id=None, keyword=""):
+        self.page_calls.append((category_id, page_num, page_size))
+        assert policy_type == 2
+        rows_by_category = {
+            8: {
+                1: [{"importInformationId": 801, "cnTitle": "车辆管理"}],
+                2: [{"importInformationId": 802, "cnTitle": "会议室管理"}],
+            },
+            11: {
+                1: [{"importInformationId": 1101, "cnTitle": "年休假制度"}],
+            },
+        }
+        totals = {8: 2, 11: 1}
+        rows = rows_by_category.get(category_id, {}).get(page_num, [])
+        return type("Page", (), {
+            "rows": rows,
+            "total": totals.get(category_id, 0),
+            "page_num": page_num,
+            "page_size": page_size,
+        })()
+
+    def fetch_detail(self, import_information_id):
+        self.detail_calls.append(import_information_id)
+        return {
+            "importInformationId": import_information_id,
+            "cnTitle": f"制度 {import_information_id}",
+            "policyCategoryTypeName": "分类",
+            "body": "<p>这是制度正文第一条。第二条用于测试分页分类导入。</p>",
+        }
+
+
+def test_ingest_yungu_categories_paginates_each_category_and_reports_documents():
+    embedding_client = FakeEmbeddingClient()
+    store = FakeStore()
+    client = FakeCategoryYunguClient()
+
+    summary = ingest_yungu_categories(
+        client=client,
+        embedding_client=embedding_client,
+        store=store,
+        policy_type=2,
+        page_size=1,
+        max_docs_per_category=None,
+        chunk_max_chars=60,
+        chunk_overlap_chars=5,
+        embedding_batch_size=2,
+    )
+
+    assert summary.category_count == 2
+    assert summary.stats.documents_seen == 3
+    assert summary.stats.documents_imported == 3
+    assert summary.stats.pages_read == 3
+    assert [report.category.name for report in summary.categories] == ["后勤制度", "HR政策及知识库"]
+    assert summary.categories[0].total_available == 2
+    assert [(doc.import_information_id, doc.title, doc.status) for doc in summary.categories[0].documents] == [
+        (801, "制度 801", "imported"),
+        (802, "制度 802", "imported"),
+    ]
+    assert client.page_calls == [(8, 1, 1), (8, 2, 1), (11, 1, 1)]
+    assert client.detail_calls == [801, 802, 1101]
+    assert len(store.saved) == summary.stats.chunks_stored
+
+
 def test_cli_exposes_safe_yungu_ingest_defaults():
     args = build_parser().parse_args(["ingest-yungu-policies", "--session", "session-value", "--dry-run"])
 
@@ -179,3 +256,13 @@ def test_cli_exposes_safe_yungu_ingest_defaults():
     assert args.all is False
     assert args.page_size == 20
     assert args.dry_run is True
+
+    category_args = build_parser().parse_args([
+        "ingest-yungu-policies",
+        "--session",
+        "session-value",
+        "--all-categories",
+        "--dry-run",
+    ])
+    assert category_args.all_categories is True
+    assert category_args.max_docs == 2

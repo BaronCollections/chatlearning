@@ -88,6 +88,36 @@ function renderBulletList(titleText, className, values) {
   return section;
 }
 
+function interview(question, answer) {
+  return { question: question, answer: answer };
+}
+
+function renderInterviewQuestions(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const section = renderSection("面试关注点", "interview-list");
+  const list = document.createElement("ul");
+  values.forEach((value) => {
+    const item = document.createElement("li");
+    const question = document.createElement("strong");
+    question.className = "interview-question";
+    const answer = document.createElement("p");
+    answer.className = "interview-answer";
+
+    if (typeof value === "string") {
+      question.textContent = value;
+      answer.textContent = "回答时要结合输入、输出、失败分支和业务影响说明，避免只背概念。";
+    } else {
+      question.textContent = value.question || value.prompt || "面试问题";
+      answer.textContent = value.answer || value.summary || "需要说明工程取舍、边界条件和真实业务中的验证方式。";
+    }
+
+    item.append(question, answer);
+    list.appendChild(item);
+  });
+  section.appendChild(list);
+  return section;
+}
+
 function renderQualityChecks(checks) {
   if (!Array.isArray(checks) || checks.length === 0) return null;
   const section = renderSection("质量检查", "quality-check-list");
@@ -240,7 +270,7 @@ function renderDetails(details) {
   const innerSteps = renderBulletList("细节点", "inner-detail-list", details?.inner_steps);
   if (innerSteps) wrapper.appendChild(innerSteps);
 
-  const interviewQuestions = renderBulletList("面试关注点", "interview-list", details?.interview_questions);
+  const interviewQuestions = renderInterviewQuestions(details?.interview_questions);
   if (interviewQuestions) wrapper.appendChild(interviewQuestions);
 
   const qualityChecks = renderQualityChecks(details?.quality_checks);
@@ -341,7 +371,7 @@ const embeddingDetails = {
 
 const ragInnerStepCatalog = {
   request_intake: [
-    microStep("读取原始问题", "保留用户原文、top_k 和入口来源，后续 trace 必须能回放原始输入。", { interview_questions: ["为什么不能只记录归一化后的 query？", "trace_id 应该在哪里生成？"] }),
+    microStep("读取原始问题", "保留用户原文、top_k 和入口来源，后续 trace 必须能回放原始输入。", { interview_questions: [interview("为什么不能只记录归一化后的 query？", "原始 query 是审计和复盘的基准；只记录归一化结果会丢掉用户真实表达，后面无法判断清洗或改写是否引入语义变化。"), interview("trace_id 应该在哪里生成？", "应在请求入口生成，并贯穿检索、rerank、LLM 和前端展示；这样日志、Langfuse span 和用户会话才能稳定关联。")] }),
     microStep("生成 trace_id", "为本次请求生成稳定追踪 ID，用于日志、Langfuse 和前后端关联。", { term_definitions: [term("trace_id", "一次请求的唯一追踪编号，用于把检索、模型、工具调用串起来。")] }),
     microStep("初始化执行上下文", "把用户、会话、top_k、时间、权限上下文放进 pipeline context。", { pitfalls: ["上下文缺用户身份，后面就无法做权限过滤。"] }),
   ],
@@ -353,7 +383,7 @@ const ragInnerStepCatalog = {
   normalize_text: [
     microStep("去首尾空白", "使用确定性规则移除首尾空格、换行和制表符。", { tool: "str.strip()" }),
     microStep("压缩连续空白", "把连续空白统一成单个空格，让缓存键、token 和 trace 更稳定。", { tool: "split() + join()" }),
-    microStep("语义保持检查", "确认清洗只改变格式，不替换词义、不扩大问题范围。", { interview_questions: ["normalize 和 rewrite 的边界是什么？"] }),
+    microStep("语义保持检查", "确认清洗只改变格式，不替换词义、不扩大问题范围。", { interview_questions: [interview("normalize 和 rewrite 的边界是什么？", "normalize 只做格式层面的确定性清洗；rewrite 会改变检索表达，所以必须做语义漂移检查。")] }),
   ],
   query_understanding: [
     microStep("识别意图", "判断用户是在问规则、流程、定义、适用范围还是最新版本。", { term_definitions: [term("Intent", "用户真正想完成的动作或问题类型。 ")] }),
@@ -363,7 +393,7 @@ const ragInnerStepCatalog = {
   query_rewrite: [
     microStep("生成独立问题", "把依赖上下文的短问句改写成可单独检索的问题。", { term_definitions: [term("Standalone query", "不依赖聊天上文也能表达完整意图的问题。 ")] }),
     microStep("补充同义词", "补年假/年休假、制度/规则等业务同义词，提高召回率。", { pitfalls: ["同义词扩展不能加入用户没有问到的新对象。"] }),
-    microStep("语义漂移检查", "比较改写前后对象、动作、时间和范围是否一致。", { interview_questions: ["query rewrite 为什么可能造成错误答案？"] }),
+    microStep("语义漂移检查", "比较改写前后对象、动作、时间和范围是否一致。", { interview_questions: [interview("query rewrite 为什么可能造成错误答案？", "改写可能扩大对象、改变时间或引入同义词误判，导致检索到看似相关但业务范围错误的证据。")] }),
   ],
   tokenize: [
     microStep("调用 tokenizer", "用 embedding 模型对应 tokenizer 展示真实 token 边界。", { term_definitions: [term("Tokenizer", "把文本切成模型词表 token 的工具。 ")] }),
@@ -376,7 +406,7 @@ const ragInnerStepCatalog = {
     microStep("校验维度和版本", "确认 query vector 和文档向量使用同一模型、同一维度、同一归一化策略。", { quality_checks: embeddingDetails.quality_checks }),
   ],
   retrieval_plan: [
-    microStep("确定 top_k", "设置召回候选数量，平衡召回率、rerank 成本和上下文长度。", { interview_questions: ["top_k 过大或过小分别有什么问题？"] }),
+    microStep("确定 top_k", "设置召回候选数量，平衡召回率、rerank 成本和上下文长度。", { interview_questions: [interview("top_k 过大或过小分别有什么问题？", "过小会漏召回，过大会增加 rerank 和上下文成本，还可能把噪声证据带入答案。")] }),
     microStep("生成过滤条件", "根据分类、权限、时间和对象范围生成 metadata filter。", { pitfalls: ["没有权限过滤的企业 RAG 不能上线。"] }),
     microStep("选择检索策略", "决定使用 dense、sparse、hybrid 或 metadata-first 检索。", { term_definitions: [term("Hybrid search", "结合向量语义召回和关键词/稀疏召回的检索方式。 ")] }),
   ],
@@ -388,12 +418,12 @@ const ragInnerStepCatalog = {
   rerank: [
     microStep("构造 query-document pair", "把用户问题和候选 chunk 组成重排输入。", { term_definitions: [term("Cross-encoder", "同时读取 query 和文档并输出相关性分数的模型。 ")] }),
     microStep("计算 rerank score", "结合语义、关键词、标题、来源和业务规则重新打分。", { pitfalls: ["只看向量距离可能把语义相近但制度不相关的文本排第一。"] }),
-    microStep("排序稳定性检查", "保留 before/after 排名，方便解释为什么候选顺序改变。", { interview_questions: ["召回和 rerank 的职责边界是什么？"] }),
+    microStep("排序稳定性检查", "保留 before/after 排名，方便解释为什么候选顺序改变。", { interview_questions: [interview("召回和 rerank 的职责边界是什么？", "召回负责尽量找全候选，rerank 负责在候选中重新排序和压噪；两者目标不同，不能互相替代。")] }),
   ],
   evidence_quality: [
     microStep("相关度阈值", "低于阈值时不强答，改为提示证据不足或反问。", { quality_checks: [{ name: "relevance_threshold", status: "ok", reason: "证据不足时强答会制造幻觉。" }] }),
     microStep("时效性检查", "检查 publish_date、effective_date 和是否存在新旧制度冲突。", { pitfalls: ["制度问答经常错在旧政策覆盖新政策。"] }),
-    microStep("引用完整性检查", "确认答案能引用具体制度、章节、来源和必要元数据。", { interview_questions: ["RAG 如何降低 hallucination？"] }),
+    microStep("引用完整性检查", "确认答案能引用具体制度、章节、来源和必要元数据。", { interview_questions: [interview("RAG 如何降低 hallucination？", "通过只基于可引用证据回答、设置相关度阈值、拒答证据不足问题，并把来源返回给用户审计。")] }),
   ],
   answer_and_observe: [
     microStep("组织证据上下文", "把高质量证据按引用和 token budget 拼成回答上下文。", { term_definitions: [term("Context window", "模型一次生成时可读取的上下文长度。 ")] }),
@@ -406,7 +436,7 @@ const prefixInnerStepCatalog = {
   embed: [
     microStep("输入质量检查", "检查文本为空、过长、语言混杂和不可解析字符。"),
     microStep("模型与维度确认", "确认 query/document embedding 使用同一模型版本和维度。", embeddingDetails),
-    microStep("索引与召回验证", "用样例 query 检查向量库是否能召回目标 chunk。", { interview_questions: ["如何判断 embedding 模型适不适合你的业务？"] }),
+    microStep("索引与召回验证", "用样例 query 检查向量库是否能召回目标 chunk。", { interview_questions: [interview("如何判断 embedding 模型适不适合你的业务？", "用真实问题集做离线评测，比较 recall@k、MRR、跨语言表现、成本和部署约束，而不是只看通用榜单。")] }),
   ],
   doc: [
     microStep("语义边界识别", "按标题、段落、条款和表格边界切分文档。"),
@@ -421,12 +451,12 @@ const prefixInnerStepCatalog = {
   lc: [
     microStep("组件装配", "把 prompt、model、tools、retriever 和 memory 组合成 chain/agent。"),
     microStep("调用边界控制", "限制工具调用次数、输入输出 schema 和异常分支。"),
-    microStep("结果解释", "把 tool observation 和模型输出串成可审计轨迹。", { interview_questions: ["LangChain 的优点和局限是什么？"] }),
+    microStep("结果解释", "把 tool observation 和模型输出串成可审计轨迹。", { interview_questions: [interview("LangChain 的优点和局限是什么？", "优点是组件丰富、上手快；局限是复杂链路容易隐藏状态和异常边界，生产系统要补 tracing、schema 和可控降级。")] }),
   ],
   lg: [
     microStep("State 读写", "每个节点只读写明确的 state 字段，避免隐式共享状态。"),
     microStep("条件边和并行边", "用 graph edge 表达分支、循环、并行和汇聚。"),
-    microStep("Checkpoint 与恢复", "失败后从保存的 state 继续执行，而不是整条链重跑。", { interview_questions: ["LangGraph 相比普通 chain 解决了什么问题？"] }),
+    microStep("Checkpoint 与恢复", "失败后从保存的 state 继续执行，而不是整条链重跑。", { interview_questions: [interview("LangGraph 相比普通 chain 解决了什么问题？", "它把流程建模成有状态图，适合分支、循环、并行、人工介入和 checkpoint 恢复，比线性 chain 更可控。")] }),
   ],
   qr: [
     microStep("候选改写生成", "生成多个查询候选，不直接相信第一个改写结果。"),
@@ -436,7 +466,7 @@ const prefixInnerStepCatalog = {
   ma: [
     microStep("任务拆解", "协调器把问题拆成检索、推理、审查等角色任务。"),
     microStep("并行执行", "互不依赖的 Agent 并行工作，减少等待时间。"),
-    microStep("冲突解决", "合并多个 Agent 的结果，显式处理矛盾和缺证据。", { interview_questions: ["多 Agent 什么时候有必要，什么时候是过度设计？"] }),
+    microStep("冲突解决", "合并多个 Agent 的结果，显式处理矛盾和缺证据。", { interview_questions: [interview("多 Agent 什么时候有必要，什么时候是过度设计？", "当任务可拆分且角色之间能独立产出时才有价值；简单问答强行多 Agent 只会增加延迟、成本和调试难度。")] }),
   ],
   ingest: [
     microStep("数据抽取", "从业务系统拉取列表、详情、附件和权限字段。"),
@@ -446,7 +476,7 @@ const prefixInnerStepCatalog = {
   lf: [
     microStep("Trace 建模", "把一次请求拆成 trace 和多个 span。"),
     microStep("评分与反馈", "记录人工反馈、自动评分和错误标签。"),
-    microStep("回放分析", "按 trace 回放，定位改写、召回、rerank 或生成问题。", { interview_questions: ["为什么 RAG 系统需要 observability？"] }),
+    microStep("回放分析", "按 trace 回放，定位改写、召回、rerank 或生成问题。", { interview_questions: [interview("为什么 RAG 系统需要 observability？", "RAG 错误可能发生在改写、召回、rerank、证据拼接或生成任一环节；没有 trace 就无法定位根因。")] }),
   ],
 };
 
@@ -462,8 +492,8 @@ function nodeDefaults(id, title) {
     details: {
       inner_step_count: innerSteps.length,
       interview_questions: [
-        `${title} 在真实业务里失败时，应该看哪些日志或 trace？`,
-        `${title} 的输入、输出和边界条件分别是什么？`,
+        interview(`${title} 在真实业务里失败时，应该看哪些日志或 trace？`, "先看 trace_id 串联的输入输出、耗时、异常、模型版本、检索候选和下游返回，确认问题发生在哪个边界。"),
+        interview(`${title} 的输入、输出和边界条件分别是什么？`, "输入输出要有 schema，边界条件要覆盖空值、超长、权限不足、无召回、外部服务超时和部分失败。"),
       ],
     },
   };
@@ -494,8 +524,8 @@ function liveChildToInnerStep(parent, child, index) {
       backend_step_key: child.key,
       backend_status: child.status || "ok",
       interview_questions: [
-        "这个子步骤的输入是什么，输出又交给了谁？",
-        "如果这个子步骤失败，用户会看到什么，工程侧应该如何降级？",
+        interview("这个子步骤的输入是什么，输出又交给了谁？", "回答要说清数据契约：输入字段、输出字段、下游消费者，以及失败时是否允许跳过或降级。"),
+        interview("如果这个子步骤失败，用户会看到什么，工程侧应该如何降级？", "用户侧要给可理解提示；工程侧按风险选择重试、使用缓存、缩小检索范围或返回证据不足。"),
       ],
     },
   };
@@ -523,7 +553,7 @@ function normalizeInnerStep(parent, innerStep, index) {
       parent_phase: parent.title,
       interview_questions: [
         ...(innerStep.details?.interview_questions || []),
-        `${parent.title} 里的这个细节点为什么不能省略？`,
+        interview(`${parent.title} 里的这个细节点为什么不能省略？`, "它通常承担可观测、质量控制或业务约束职责；省略后短期能跑通，但问题发生时难以解释和修复。"),
       ],
     },
   };

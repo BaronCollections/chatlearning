@@ -955,3 +955,18 @@ pre {
     max-height: 320px;
   }
 }
+
+
+.interview-question {
+  display: block;
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.interview-answer {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}

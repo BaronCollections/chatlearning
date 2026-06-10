@@ -87,3 +87,16 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert ".trace-3d-workbench" not in app_css
     assert ".detail-connector" not in app_css
     assert ".connector-line" not in app_css
+
+
+def test_interview_focus_points_include_brief_answers():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    app_css = (WEB_DIR / "app.css").read_text(encoding="utf-8")
+
+    assert "renderInterviewQuestions" in app_js
+    assert "question:" in app_js
+    assert "answer:" in app_js
+    assert "interview-question" in app_js
+    assert "interview-answer" in app_js
+    assert ".interview-question" in app_css
+    assert ".interview-answer" in app_css
