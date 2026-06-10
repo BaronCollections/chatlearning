@@ -274,6 +274,90 @@ DISCIPLINARY_ACTION_RETRIEVAL_TERMS = [
     "最终处理决定",
     "申诉",
 ]
+ABSENTEEISM_BEHAVIOR = "absenteeism"
+ABSENTEEISM_BEHAVIOR_TERMS = [
+    "旷工",
+    "连续旷工",
+    "擅自不出勤",
+    "擅自离岗",
+    "未提前提交请假申请",
+    "请假申请未经学校批准",
+    "逾期不归",
+    "逾期不出勤",
+]
+ABSENTEEISM_UNDER_THREE_TERMS = [
+    "连续旷工3个工作日以下",
+    "扣除旷工期间工资",
+    "记过处分",
+]
+ABSENTEEISM_THREE_OR_MORE_TERMS = [
+    "连续旷工3个工作日及以上",
+    "一年内累计两次及以上旷工",
+    "扣除旷工期间工资",
+    "辞退处分",
+]
+ABSENTEEISM_POLICY_TITLE_TERMS = [
+    "工作时间及假期管理制度",
+    "云谷人守则-工作时间及假期管理制度",
+]
+CHINESE_NUMBER_MAP = {
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+
+
+def _parse_chinese_day_number(value: str) -> int | None:
+    if value in CHINESE_NUMBER_MAP:
+        return CHINESE_NUMBER_MAP[value]
+    if value.startswith("十") and len(value) == 2:
+        ones = CHINESE_NUMBER_MAP.get(value[1:])
+        return 10 + ones if ones is not None else None
+    if value.endswith("十") and len(value) == 2:
+        tens = CHINESE_NUMBER_MAP.get(value[:1])
+        return tens * 10 if tens is not None else None
+    if "十" in value and len(value) == 3:
+        tens = CHINESE_NUMBER_MAP.get(value[:1])
+        ones = CHINESE_NUMBER_MAP.get(value[2:])
+        if tens is not None and ones is not None:
+            return tens * 10 + ones
+    return None
+
+
+def _extract_day_duration(query: str) -> dict[str, Any] | None:
+    digit_match = re.search(r"(\d{1,2})\s*(?:个)?(?:工作日|天|日)", query)
+    if digit_match:
+        return {"value": int(digit_match.group(1)), "unit": "day"}
+    chinese_match = re.search(r"([一二两三四五六七八九十]{1,3})\s*(?:个)?(?:工作日|天|日)", query)
+    if chinese_match:
+        value = _parse_chinese_day_number(chinese_match.group(1))
+        if value is not None:
+            return {"value": value, "unit": "day"}
+    return None
+
+
+def _absenteeism_threshold(duration: dict[str, Any] | None) -> str | None:
+    if not duration or duration.get("unit") != "day":
+        return None
+    value = duration.get("value")
+    if not isinstance(value, int):
+        return None
+    if value < 3:
+        return "continuous_absence_under_3_workdays"
+    return "continuous_absence_3_or_more_workdays"
+
+
+def _has_absenteeism_intent(query: str) -> bool:
+    return any(term in query for term in ABSENTEEISM_BEHAVIOR_TERMS)
 
 
 def _has_disciplinary_action_intent(query: str) -> bool:
@@ -294,6 +378,11 @@ def _policy_lookup_spec(query: str) -> dict[str, Any]:
         "target_clause": None,
         "target_clause_no": None,
         "target_subclause": None,
+        "target_behavior": None,
+        "target_behavior_label": None,
+        "behavior_duration": None,
+        "behavior_threshold": None,
+        "preferred_policy_titles": [],
         "asked_aspect": None,
         "exclude_sections": [],
         "exclude_clauses": [],
@@ -328,6 +417,22 @@ def _policy_lookup_spec(query: str) -> dict[str, Any]:
         if "虚假报销" in query:
             spec["target_subclause"] = "4.3"
 
+    if _has_absenteeism_intent(query):
+        duration = _extract_day_duration(query)
+        threshold = _absenteeism_threshold(duration)
+        spec["target_behavior"] = ABSENTEEISM_BEHAVIOR
+        spec["target_behavior_label"] = "旷工"
+        spec["behavior_duration"] = duration
+        spec["behavior_threshold"] = threshold
+        spec["preferred_policy_titles"] = ABSENTEEISM_POLICY_TITLE_TERMS
+        set_exact(*ABSENTEEISM_BEHAVIOR_TERMS, *ABSENTEEISM_POLICY_TITLE_TERMS)
+        if threshold == "continuous_absence_under_3_workdays":
+            set_exact(*ABSENTEEISM_UNDER_THREE_TERMS)
+        elif threshold == "continuous_absence_3_or_more_workdays":
+            set_exact(*ABSENTEEISM_THREE_OR_MORE_TERMS)
+        else:
+            set_exact(*ABSENTEEISM_UNDER_THREE_TERMS, *ABSENTEEISM_THREE_OR_MORE_TERMS)
+
     if _has_disciplinary_action_intent(query):
         spec["asked_aspect"] = DISCIPLINARY_ACTION_ASPECT
         set_exact(*DISCIPLINARY_ACTION_RETRIEVAL_TERMS)
@@ -343,11 +448,13 @@ def _policy_lookup_spec(query: str) -> dict[str, Any]:
 
 def _detect_query_understanding(query: str) -> dict[str, Any]:
     policy_category_hint = "general"
-    if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假"]):
+    if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗"]):
         if any(term in query for term in ["年假", "年休假"]):
             policy_category_hint = "leave"
-        elif any(term in query for term in ["违规", "弄虚作假"]):
+        elif any(term in query for term in ["违规", "弄虚作假", "旷工"]):
             policy_category_hint = "conduct"
+        elif any(term in query for term in ["考勤", "迟到", "早退", "离岗"]):
+            policy_category_hint = "attendance"
         else:
             policy_category_hint = "hr"
     elif any(term in query for term in ["报销", "采购", "发票", "财务"]):
@@ -355,7 +462,7 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
     elif any(term in query for term in ["安全", "账号", "数据", "外传"]):
         policy_category_hint = "security"
 
-    audience_hint = "employee" if any(term in query for term in ["员工", "老师", "教师", "HR", "违规", "弄虚作假"]) else "unknown"
+    audience_hint = "employee" if any(term in query for term in ["员工", "老师", "教师", "HR", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗"]) else "unknown"
     if any(term in query for term in ["学生", "幼儿园", "小学", "初中", "高中"]):
         audience_hint = "student_or_stage_specific"
 
@@ -393,6 +500,10 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
             "处罚",
             "处分",
             "处理",
+            "旷工",
+            "迟到",
+            "早退",
+            "离岗",
         ]
         if term in query
     ]
@@ -542,6 +653,8 @@ def _target_marker_variants(understanding: dict[str, Any]) -> list[str]:
         markers.extend(["一类及二类违规", "一类违规行为"])
     if "三类违规" in markers or understanding.get("target_section") == "三类违规行为":
         markers.extend(["二类、三类违规", "二类及三类违规", "三类违规行为"])
+    if understanding.get("target_behavior") == ABSENTEEISM_BEHAVIOR:
+        markers.extend(ABSENTEEISM_BEHAVIOR_TERMS)
     return list(dict.fromkeys(marker for marker in markers if marker))
 
 
@@ -587,7 +700,7 @@ def _filter_target_evidence(results: list[SearchResult], understanding: dict[str
             "input_count": len(results),
             "output_count": 0,
             "dropped_chunk_ids": [result.chunk.chunk_id for result in results],
-            "reason": "没有找到明确的目标章节/条款本体，拒绝使用不相关候选生成答案。",
+            "reason": "没有找到明确的目标章节/条款/行为本体，拒绝使用不相关候选生成答案。",
         }
     dropped = [result.chunk.chunk_id for result in results if result not in direct_results]
     return direct_results, {
@@ -595,7 +708,7 @@ def _filter_target_evidence(results: list[SearchResult], understanding: dict[str
         "input_count": len(results),
         "output_count": len(direct_results),
         "dropped_chunk_ids": dropped,
-        "reason": "精确制度查询只保留目标章节/条款本体证据，过滤仅参见其它制度的引用型片段。",
+        "reason": "精确制度查询只保留目标章节/条款/行为本体证据，过滤仅参见其它制度或不能回答问题面的片段。",
     }
 
 
@@ -609,6 +722,8 @@ def _rerank_results(
     target_terms = [str(term) for term in understanding.get("target_terms") or []]
     target_section = understanding.get("target_section")
     target_clause = understanding.get("target_clause")
+    target_behavior = understanding.get("target_behavior")
+    preferred_policy_titles = [str(item) for item in understanding.get("preferred_policy_titles") or []]
     asked_aspect = understanding.get("asked_aspect")
     exclude_sections = [str(item) for item in understanding.get("exclude_sections") or []]
     exclude_clauses = [str(item) for item in understanding.get("exclude_clauses") or []]
@@ -639,6 +754,12 @@ def _rerank_results(
         if asked_aspect and _has_target_marker(haystack, understanding):
             exact_bonus += 2.0
             reasons.append("命中目标对象")
+        if target_behavior and _has_target_marker(haystack, understanding):
+            exact_bonus += 4.0
+            reasons.append("命中行为对象")
+        if preferred_policy_titles and any(title in haystack for title in preferred_policy_titles):
+            exact_bonus += 4.0
+            reasons.append("命中优先制度")
         if asked_aspect and _has_aspect_signal(haystack, understanding):
             exact_bonus += 5.0
             reasons.append("命中问题面")
@@ -647,10 +768,13 @@ def _rerank_results(
         if understanding.get("retrieval_intent") == "exact_policy_lookup" and target_section:
             if not _is_direct_target_evidence(result, understanding):
                 penalty += 3.0
-                reasons.append("缺少目标章节/条款本体，已降权")
+                reasons.append("缺少目标章节/条款/行为本体，已降权")
             if _is_reference_only_text(chunk.text, understanding):
                 penalty += 6.0
                 reasons.append("仅为参见型片段，不能作为最终证据")
+        if target_behavior and not _has_target_marker(haystack, understanding):
+            penalty += 6.0
+            reasons.append("缺少行为对象，已降权")
         if asked_aspect and not _has_aspect_signal(haystack, understanding):
             penalty += 5.0
             reasons.append("缺少问题面证据，已降权")
@@ -676,6 +800,7 @@ def _rerank_results(
             "reason": reason,
             "target_section": target_section,
             "target_clause": target_clause,
+            "target_behavior": target_behavior,
             "asked_aspect": asked_aspect,
         }
         for rank_after, (score, rank_before, result, reason) in enumerate(scored, start=1)
@@ -781,12 +906,15 @@ def _trim_end_marker_prefix(text: str, end_index: int) -> tuple[int, str | None]
 def _extract_scoped_text(text: str, understanding: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     target_clause = understanding.get("target_clause")
     target_section = understanding.get("target_section")
+    target_behavior = understanding.get("target_behavior")
     exclude_sections = [str(item) for item in understanding.get("exclude_sections") or []]
     exclude_clauses = [str(item) for item in understanding.get("exclude_clauses") or []]
     scope = {
         "applied": False,
         "target_section": target_section,
         "target_clause": target_clause,
+        "target_behavior": target_behavior,
+        "behavior_threshold": understanding.get("behavior_threshold"),
         "start_marker": None,
         "end_marker": None,
         "excluded_markers": [*exclude_sections, *exclude_clauses],
@@ -812,6 +940,21 @@ def _extract_scoped_text(text: str, understanding: dict[str, Any]) -> tuple[str,
         end_markers = []
         for section in exclude_sections:
             end_markers.extend([f"（一）{section}", f"（二）{section}", f"（三）{section}", str(section)])
+        end_index, end_marker = _find_first_marker(text, end_markers, start=start_index + len(start_marker or ""))
+    elif target_behavior == ABSENTEEISM_BEHAVIOR:
+        threshold = understanding.get("behavior_threshold")
+        if threshold == "continuous_absence_under_3_workdays":
+            start_markers = ["连续旷工3个工作日以下", "连续旷工 3 个工作日以下", "旷工3个工作日以下"]
+            end_markers = ["连续旷工3个工作日及以上", "连续旷工 3 个工作日及以上", "考勤结果", "五、假期标准"]
+        elif threshold == "continuous_absence_3_or_more_workdays":
+            start_markers = ["连续旷工3个工作日及以上", "连续旷工 3 个工作日及以上", "一年内累计两次及以上旷工"]
+            end_markers = ["考勤结果", "五、假期标准"]
+        else:
+            start_markers = ["（三） 旷工", "（三）旷工", "旷工 凡符合", "连续旷工"]
+            end_markers = ["考勤结果", "五、假期标准"]
+        start_index, start_marker = _find_first_marker(text, start_markers)
+        if start_index < 0:
+            return text, scope
         end_index, end_marker = _find_first_marker(text, end_markers, start=start_index + len(start_marker or ""))
     else:
         return text, scope
@@ -1069,6 +1212,11 @@ DATA_FLOW_OUTPUT_KEYS = (
     "target_clause",
     "target_clause_no",
     "target_subclause",
+    "target_behavior",
+    "target_behavior_label",
+    "behavior_duration",
+    "behavior_threshold",
+    "preferred_policy_titles",
     "asked_aspect",
     "aspect_terms",
     "exclude_sections",
@@ -1529,6 +1677,11 @@ def run_chat_trace(
         "target_clause": understanding.get("target_clause"),
         "target_clause_no": understanding.get("target_clause_no"),
         "target_subclause": understanding.get("target_subclause"),
+        "target_behavior": understanding.get("target_behavior"),
+        "target_behavior_label": understanding.get("target_behavior_label"),
+        "behavior_duration": understanding.get("behavior_duration"),
+        "behavior_threshold": understanding.get("behavior_threshold"),
+        "preferred_policy_titles": understanding.get("preferred_policy_titles"),
         "asked_aspect": understanding.get("asked_aspect"),
         "aspect_terms": understanding.get("aspect_terms"),
         "exclude_sections": understanding.get("exclude_sections"),

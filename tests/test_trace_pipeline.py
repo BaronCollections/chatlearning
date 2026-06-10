@@ -461,6 +461,78 @@ def test_disciplinary_action_scope_removes_next_numbered_section_prefix():
 
 
 
+def test_absenteeism_duration_query_returns_matching_penalty_rule():
+    absenteeism_text = (
+        "（三） 旷工 凡符合以下情况之一的应视为旷工："
+        "1. 未提前提交请假申请或紧急情况下未口头征得主管同意擅自不出勤或擅自离岗的；"
+        "注：连续旷工3个工作日以下的，扣除旷工期间工资，并给予记过处分；"
+        "连续旷工3个工作日及以上的，或一年内累计两次及以上旷工的，扣除旷工期间工资，并给予辞退处分。"
+    )
+    student_text = (
+        "学生红黄灯行为处理办法。严重违纪可给予记过处分、停课、停学等教育惩戒措施。"
+    )
+
+    class AbsenteeismStore:
+        def __init__(self):
+            self.calls = []
+
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            self.calls.append({"query_text": query_text, "metadata_filters": metadata_filters})
+            return [
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="student-discipline",
+                        doc_id="student-policy",
+                        block_id="student-discipline",
+                        text=student_text,
+                        heading_path=["云谷学校小学部红黄灯行为及处理办法"],
+                        metadata={"title": "云谷学校小学部红黄灯行为及处理办法", "policy_category_type_name": "中小学教育教学相关制度"},
+                    ),
+                    distance=0.05,
+                ),
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="worktime-absenteeism",
+                        doc_id="yungu-policy-11",
+                        block_id="chunk-0001",
+                        text=absenteeism_text,
+                        heading_path=["云谷人守则-工作时间及假期管理制度"],
+                        metadata={
+                            "source": "yungu_policy_system",
+                            "import_information_id": 11,
+                            "title": "云谷人守则-工作时间及假期管理制度",
+                            "policy_category_type_name": "云谷人守则",
+                            "source_url": "https://work.yungu.org/policyDetail/11",
+                        },
+                    ),
+                    distance=0.2,
+                ),
+            ]
+
+    store = AbsenteeismStore()
+    response = run_chat_trace(
+        "我旷工两天会受到什么处罚",
+        embedding_client=FakeEmbeddingClient(),
+        store=store,
+        top_k=3,
+    )
+
+    filters = store.calls[0]["metadata_filters"]
+    assert filters["target_behavior"] == "absenteeism"
+    assert filters["behavior_duration"] == {"value": 2, "unit": "day"}
+    assert "连续旷工3个工作日以下" in filters["target_terms"]
+    rewrite = _step(response, "query_rewrite")
+    assert "连续旷工3个工作日以下" in rewrite["details"]["expanded_query"]
+    assert "扣除旷工期间工资，并给予记过处分" in response["answer"]
+    assert "学生红黄灯行为处理办法" not in response["answer"]
+    assert response["results"][0]["chunk_id"] == "worktime-absenteeism"
+    rerank = _step(response, "rerank")
+    assert "命中行为对象" in rerank["details"]["rerank_comparison"][0]["reason"]
+    evidence = _step(response, "evidence_quality")
+    assert evidence["details"]["target_evidence_filter"]["output_count"] == 1
+
+
+
 def test_disciplinary_action_query_prefers_penalty_process_over_definition():
     definition_text = (
         "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、破坏学校管理秩序等"
