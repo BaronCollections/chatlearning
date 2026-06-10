@@ -80,6 +80,8 @@ def test_yungu_policy_client_fetches_list_and_detail_and_rejects_login_failure()
                 200,
                 json={
                     "status": True,
+                    "code": 1001,
+                    "message": "Success",
                     "ifLogin": True,
                     "content": {
                         "total": 1,
@@ -212,7 +214,6 @@ class FakeCategoryYunguClient:
         return {
             "importInformationId": import_information_id,
             "cnTitle": f"制度 {import_information_id}",
-            "policyCategoryTypeName": "分类",
             "body": "<p>这是制度正文第一条。第二条用于测试分页分类导入。</p>",
         }
 
@@ -247,6 +248,8 @@ def test_ingest_yungu_categories_paginates_each_category_and_reports_documents()
     assert client.page_calls == [(8, 1, 1), (8, 2, 1), (11, 1, 1)]
     assert client.detail_calls == [801, 802, 1101]
     assert len(store.saved) == summary.stats.chunks_stored
+    assert store.saved[0].metadata["policy_category_type"] == 8
+    assert store.saved[0].metadata["policy_category_type_name"] == "后勤制度"
 
 
 def test_cli_exposes_safe_yungu_ingest_defaults():

@@ -309,7 +309,7 @@ class YunguPolicyClient:
             raise YunguApiError(f"Yungu API returned unexpected payload type for {path}")
         if payload.get("ifLogin") is False:
             raise YunguApiError("Yungu API session is not logged in or has expired")
-        if payload.get("status") is False or payload.get("code") not in (None, 0, 200, "0", "200"):
+        if payload.get("status") is False or payload.get("code") not in (None, 0, 200, 1001, "0", "200", "1001"):
             message = payload.get("message") or payload.get("msg") or "unknown error"
             raise YunguApiError(f"Yungu API error for {path}: {message}")
         return payload
@@ -431,6 +431,17 @@ def _title_from_row_or_detail(row: dict[str, Any], detail: dict[str, Any] | None
     )
 
 
+def _with_category_metadata(detail: dict[str, Any], category: YunguCategory | None) -> dict[str, Any]:
+    if category is None:
+        return detail
+    enriched = dict(detail)
+    enriched.setdefault("policyCategoryType", category.category_id)
+    enriched.setdefault("policyCategoryTypeName", category.name)
+    if category.ename:
+        enriched.setdefault("policyCategoryTypeEname", category.ename)
+    return enriched
+
+
 def ingest_yungu_policy_report(
     *,
     client: Any,
@@ -518,7 +529,7 @@ def ingest_yungu_policy_report(
 
             detail: dict[str, Any] | None = None
             try:
-                detail = client.fetch_detail(import_id)
+                detail = _with_category_metadata(client.fetch_detail(import_id), effective_category)
                 chunks = detail_to_policy_chunks(detail, max_chars=chunk_max_chars, overlap_chars=chunk_overlap_chars)
                 title = _title_from_row_or_detail(row, detail, import_id)
                 if not chunks:
