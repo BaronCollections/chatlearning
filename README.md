@@ -24,6 +24,32 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 - `多 Agent 协作`：展示 coordinator、retriever/reasoner/reviewer 并行协作和汇总。
 - `企业知识库导入`：展示文档列表、正文清洗、附件解析、权限 metadata、chunk、embedding、upsert。
 - `Langfuse 观测链路`：展示 trace/span/score/replay 如何帮助回放和评估 RAG/Agent 调用。
+- `生产 RAG 成熟度`：把本轮 15 个生产化增强项以流程图展示，并用颜色区分已落地、接口已预留和待接入。
+
+
+## 生产 RAG 成熟度 15 项
+
+右侧流程图会用 `本轮优化` 标记本次加入的生产化能力，并用状态色表达真实落地程度：绿色是 `已落地`，蓝色是 `接口已预留`，琥珀色虚线是 `待接入`。这些状态不是营销标签，而是工程边界：没有接真实外部服务的能力不会被写成已上线。
+
+| 能力 | 状态 | 解决的问题 | 当前落地边界 |
+|---|---|---|---|
+| 回归评测集与 Eval Runner | 已落地 | 防止修 A 坏 B，固定来源、关键词和禁止词验收 | 已有 `evaluation.py` 纯函数；CLI/CI 页面可继续接入 |
+| 坏例采集与反馈闭环 | 已落地 | 把错来源、缺条款、答太泛沉淀为可回放坏例 | 已有 `/api/feedback` 与 JSONL 写入，只保存 citation 摘要 |
+| 导入质量报告 | 接口已预留 | 说明处理了哪些分类、文档、chunk 和失败原因 | importer 已有统计对象，报告落盘和页面待接 |
+| 适用对象与权限过滤 | 待接入 | 防止员工/学生/学段/权限范围混用 | 需要接真实登录态、组织权限和 metadata filter |
+| 结构化答案契约 | 已落地 | 避免直接贴 chunk，输出事实、规则、结论、来源 | 规则型问题已结构化，后续可固定 JSON schema |
+| 多跳规则解析器 | 已落地 | 用户事实先匹配制度条件，再跳到处理结果 | 已覆盖旷工、虚假报销、打听工资等核心样例 |
+| Cross-encoder Reranker | 接口已预留 | 在候选内部重新排序，降低相似但不回答问题的证据 | 已有 HTTP client/env，实际模型服务需外接 |
+| Query Router 查询路由 | 接口已预留 | 不同问题走精确条款、规则解析、语义检索或澄清 | query understanding 已输出关键字段，独立 router 待抽象 |
+| 引用 Span 高亮 | 接口已预留 | 来源细化到章节、条款和最小证据范围 | 已有章节 metadata 和 span extraction，前端高亮待接 |
+| Langfuse / OpenTelemetry 观测 | 接口已预留 | 通过 trace/span 回放问题发生在哪个边界 | 本地 trace 已有，外部观测 exporter 待接 |
+| 增量同步与版本管理 | 待接入 | 防止旧制度残留、删除文档仍被检索 | 需要 source_updated_at、content_hash、deleted_at 策略 |
+| PDF / Word / 表格 / 多模态解析 | 待接入 | 解析附件、表格、扫描件和图片里的制度内容 | 需要接专门 parser/OCR，并进入导入质量报告 |
+| Prompt Injection 与数据泄露护栏 | 待接入 | 防止越权、泄露系统提示、恶意文档指令污染 | 需要入口、文档、工具、输出分层防护 |
+| 缓存与成本控制 | 待接入 | 降低重复 embedding/rerank/LLM 调用成本和延迟 | 需要按权限、模型版本、数据版本设计 cache key |
+| 外部知识 API 与工具检索 | 待接入 | 回答实时审批、个人额度、业务状态等非静态知识 | 需要白名单 tool registry、权限、超时和审计 |
+
+点击任意增强节点时，抽屉会展示 `解决的问题`、`落地方式`、`验收方式`、`边界条件` 和术语解释。主 RAG 流程里的相关节点也会显示这些增强项，便于学习者理解它们不是孤立模块，而是挂在请求接入、检索计划、rerank、证据质量、答案观测和数据导入这些真实边界上。
 
 ## RAG 基础流程怎么表达并行
 
@@ -122,6 +148,8 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 │   ├── reranker_client.py              # 可选 cross-encoder reranker HTTP 客户端
 │   ├── policy_rule_resolver.py         # 规则型查询解析：事实 -> 条件 -> 结论
 │   ├── regression_cases.py             # 制度问答回归评测样本
+│   ├── evaluation.py                    # 回归评测执行与结果汇总
+│   ├── bad_cases.py                     # 坏例反馈记录，默认不保存完整正文
 │   ├── samples.py                      # 可公开的样例制度 chunk
 │   ├── yungu_importer.py               # 云谷制度分页、详情、HTML 清洗和结构化切块
 │   ├── trace_pipeline.py               # 后端 RAG trace 主流程
@@ -221,6 +249,24 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 .venv/bin/python -m uvicorn enterprise_rag_mvp.web_app:app --host 0.0.0.0 --port 8010
 ```
 
+
+Web 服务还提供坏例反馈接口，适合把用户点踩、错来源、缺条款等问题沉淀成后续回归样本：
+
+```http
+POST /api/feedback
+Content-Type: application/json
+
+{
+  "query": "二类违规的处罚是什么",
+  "feedback_type": "missing_clause",
+  "answer": "只返回了定义，缺少处罚",
+  "trace_id": "trace-id",
+  "results": []
+}
+```
+
+支持的 `feedback_type` 包括 `correct`、`wrong_source`、`missing_clause`、`irrelevant_answer`、`too_verbose`、`scope_leak`、`unsafe_or_sensitive`。接口只保存 citation 摘要，不保存完整 chunk 正文或原始 trace。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
@@ -230,6 +276,7 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 | `RAG_DISABLE_PGVECTOR` | `false` | 设置为 `true` 时跳过 pgvector，使用内存样例模式 |
 | `RERANKER_SERVICE_URL` | 空 | 可选 cross-encoder reranker 服务地址，接口为 `POST /rerank` |
 | `RERANKER_PROVIDER` | `external_cross_encoder` | trace 中展示的 reranker 名称，例如 `bge-reranker-v2-m3` |
+| `RAG_BAD_CASE_PATH` | `data/bad_cases.jsonl` | `/api/feedback` 写入的坏例 JSONL 路径；`data/` 默认不提交 |
 
 不要把 `.env`、cookie、session、数据库密码或真实源文档提交到仓库；GitHub 发布只同步代码、公开样例、测试和说明文档。
 

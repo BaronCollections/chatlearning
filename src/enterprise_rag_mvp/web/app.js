@@ -259,6 +259,57 @@ function renderRequirementDetail(details) {
   return section;
 }
 
+function renderEnhancementDetail(enhancements) {
+  if (!Array.isArray(enhancements) || enhancements.length === 0) return null;
+  const section = renderSection("生产 RAG 成熟度", "enhancement-detail");
+  enhancements.forEach((enhancement) => {
+    const article = document.createElement("article");
+    article.className = `enhancement-card status-${enhancement.status || "planned"}`;
+
+    const header = document.createElement("div");
+    header.className = "enhancement-card-header";
+    const title = document.createElement("h4");
+    title.textContent = enhancement.title || enhancement.id;
+    const badges = document.createElement("div");
+    badges.className = "enhancement-badge-row";
+    if (enhancement.current) {
+      const current = document.createElement("span");
+      current.className = "enhancement-current-badge";
+      current.textContent = "本轮优化";
+      badges.appendChild(current);
+    }
+    const status = document.createElement("span");
+    status.className = `enhancement-status-badge status-${enhancement.status || "planned"}`;
+    status.textContent = enhancementStatusLabels[enhancement.status] || enhancement.status || "待接入";
+    badges.appendChild(status);
+    header.append(title, badges);
+
+    const summary = document.createElement("p");
+    summary.className = "enhancement-summary";
+    summary.textContent = enhancement.summary || "生产 RAG 增强项。";
+
+    const fields = document.createElement("dl");
+    fields.className = "enhancement-fields";
+    [
+      ["解决的问题", enhancement.solves],
+      ["落地方式", enhancement.implementation],
+      ["验收方式", enhancement.acceptance],
+      ["边界条件", enhancement.boundaries],
+    ].forEach(([labelText, value]) => {
+      if (!value) return;
+      const dt = document.createElement("dt");
+      dt.textContent = labelText;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      fields.append(dt, dd);
+    });
+
+    article.append(header, summary, fields);
+    section.appendChild(article);
+  });
+  return section;
+}
+
 function renderQualityChecks(checks) {
   if (!Array.isArray(checks) || checks.length === 0) return null;
   const section = renderSection("质量检查", "quality-check-list");
@@ -393,6 +444,7 @@ function renderDetails(details) {
     "inner_steps",
     "interview_questions",
     "issue_solutions",
+    "production_enhancements",
     "requirement",
     "requirement_reason",
     "data_flow",
@@ -408,6 +460,9 @@ function renderDetails(details) {
 
   const requirementNote = renderRequirementDetail(details);
   if (requirementNote) wrapper.appendChild(requirementNote);
+
+  const enhancementDetail = renderEnhancementDetail(details?.production_enhancements);
+  if (enhancementDetail) wrapper.appendChild(enhancementDetail);
 
   const termList = renderTermList(details?.term_definitions);
   if (termList) wrapper.appendChild(termList);
@@ -515,6 +570,296 @@ const requirementDescriptions = {
   conditional: "这一步由场景触发，例如检索策略、输入复杂度、权限要求或部署方式不同会影响是否执行。",
 };
 
+const enhancementStatusLabels = {
+  shipped: "已落地",
+  interface: "接口已预留",
+  planned: "待接入",
+};
+
+function productionEnhancement(config) {
+  return {
+    current: true,
+    requirement: "optional",
+    status: "planned",
+    term_definitions: [],
+    interview_questions: [],
+    issue_solutions: [],
+    ...config,
+  };
+}
+
+const productionEnhancements = [
+  productionEnhancement({
+    id: "eval_runner",
+    title: "回归评测集与 Eval Runner",
+    stage: "质量评测闭环",
+    status: "shipped",
+    requirement: "required",
+    summary: "把典型问题、期望来源、必须命中的关键词和禁止词沉淀成可重复运行的评测样本。",
+    solves: "解决每次手工提问才发现问题、修 A 坏 B 无法证明的质量回归。",
+    implementation: "后端已提供 evaluate_regression_case / evaluate_regression_cases，按 doc_id、URL、关键词和 forbidden keyword 给出通过率；下一步可接 CLI、CI 和 Langfuse dataset。",
+    acceptance: "新增检索策略、chunk 策略或 rerank 参数后，核心制度问答样本必须稳定通过，并能看到失败原因。",
+    boundaries: "评测只判断可观测信号，不替代人工制度解释；没有标准答案的开放问题应单独建人工评分集。",
+    term_definitions: [
+      term("Eval Runner", "批量运行标准问题集并输出通过率、失败原因和回归对比的评测执行器。"),
+      term("Forbidden keyword", "答案中不应该出现的词，用来防止相邻章节、错误制度或越权内容混入。"),
+    ],
+    interview_questions: [interview("RAG 为什么一定要有回归评测？", "因为检索、切块、rerank 和 prompt 都会互相影响；没有评测集就无法证明一次优化没有破坏其它问题。")],
+    issue_solutions: [issueSolution("只靠人工点几个问题验收", "把高频问题、事故问题和边界问题写成 regression cases，每次改动自动跑。", "线上会反复出现同类错误，团队无法量化质量是否提升。")],
+  }),
+  productionEnhancement({
+    id: "bad_case_feedback",
+    title: "坏例采集与反馈闭环",
+    stage: "质量评测闭环",
+    status: "shipped",
+    requirement: "required",
+    summary: "把用户点踩、错来源、缺条款、答太泛等反馈保存成结构化坏例。",
+    solves: "解决线上回答错了以后只能看聊天记录，无法沉淀为下一轮评测和修复输入。",
+    implementation: "后端提供 /api/feedback 和 bad_cases JSONL 写入，只保存 query、反馈类型、答案和 citation 摘要，不保存完整制度正文或原始 trace。",
+    acceptance: "提交 missing_clause / wrong_source 等反馈后，data/bad_cases.jsonl 中能看到可回放的最小记录，且不包含完整 chunk text。",
+    boundaries: "反馈不直接修改答案，也不自动训练模型；需要人工或离线任务审核后再进入评测集。",
+    term_definitions: [term("Bad Case", "线上或测试中发现的失败样本，通常包含 query、错误类型、期望证据和复现信息。")],
+    interview_questions: [interview("坏例为什么不能只存在聊天历史里？", "聊天历史难检索、难分类、难回归；结构化坏例才能进入评测、排期和质量看板。")],
+    issue_solutions: [issueSolution("保存完整 trace 或正文造成数据风险", "只保存 citation 摘要、doc_id、chunk_id 和反馈标签；敏感正文通过授权环境重新拉取。", "内部制度、个人信息或权限内容可能被错误写入可提交文件。")],
+  }),
+  productionEnhancement({
+    id: "ingest_quality_report",
+    title: "导入质量报告",
+    stage: "数据治理",
+    status: "interface",
+    requirement: "required",
+    summary: "统计每次导入的分类、页数、文档数、chunk 数、空正文、重复 ID、解析失败和跳过原因。",
+    solves: "解决知识库看似导入成功，但实际缺正文、缺权限、重复 chunk 或附件解析失败的问题。",
+    implementation: "导入链路已有分类和导入统计对象；需要补充质量报告落盘、阈值判断和前端查看入口。",
+    acceptance: "每次导入都输出 category-level report，能回答处理了哪些分类、多少文档、失败原因是什么。",
+    boundaries: "报告只能证明导入过程完整，不保证制度内容本身是最新或业务解释正确。",
+    term_definitions: [term("Ingestion Quality Report", "导入任务的质量账本，记录源数据、处理结果、失败原因和可审计统计。")],
+    issue_solutions: [issueSolution("只看 upsert 成功数", "同时校验 source count、detail count、chunk count、empty body、ACL 字段和 citation URL。", "检索失败时无法判断是没导入、切坏了，还是检索策略错。")],
+  }),
+  productionEnhancement({
+    id: "audience_permission_filter",
+    title: "适用对象与权限过滤",
+    stage: "检索治理",
+    status: "planned",
+    requirement: "required",
+    summary: "把员工、学生、学段、部门、制度分类和可见范围作为 metadata filter 参与召回。",
+    solves: "解决员工问题命中学生制度、未授权用户看到内部制度、跨学段答案混用的问题。",
+    implementation: "导入时写入 audience、permission_scope、category、stage 等字段；检索计划阶段按用户身份生成强制过滤条件。",
+    acceptance: "同一个问题在不同用户身份下返回的候选范围不同，越权文档在初始召回前就被过滤。",
+    boundaries: "权限过滤必须依赖真实登录态和组织权限系统；前端展示不能替代后端强约束。",
+    term_definitions: [term("Audience Filter", "按适用对象和用户可见范围限制候选文档的 metadata 过滤条件。")],
+    issue_solutions: [issueSolution("只在答案阶段提示适用对象", "权限和 audience 要在 retrieval plan 和 SQL/filter 层执行，不能等生成后再补一句提醒。", "错误证据一旦进入上下文，模型可能已经泄露或混用。")],
+  }),
+  productionEnhancement({
+    id: "structured_answer_contract",
+    title: "结构化答案契约",
+    stage: "答案生成",
+    status: "shipped",
+    requirement: "required",
+    summary: "答案按事实复述、规则匹配、结论、依据、不确定性提醒组织，而不是直接贴 chunk。",
+    solves: "解决回答冗长、夹带无关章节、用户看不出为什么得到这个结论的问题。",
+    implementation: "规则型问题已按用户事实、匹配条件、处理结果和来源生成结构化回答；后续可进一步固定 JSON schema 给前端渲染。",
+    acceptance: "问旷工两天、虚假报销、打听工资时，答案能说明命中哪个制度条件、属于什么违规、处理结果是什么。",
+    boundaries: "结构化答案不能弥补证据不足；证据不足时应拒答或反问，不允许用格式包装猜测。",
+    term_definitions: [term("Answer Contract", "后端承诺给前端和用户的答案结构，包括结论、证据、边界、来源和不确定性。")],
+    issue_solutions: [issueSolution("把候选 chunk 整段输出", "先做 span extraction 和规则匹配，再输出结论条目和引用。", "答案会混入上一节/下一节内容，学习者也看不懂推理路径。")],
+  }),
+  productionEnhancement({
+    id: "multi_hop_resolver",
+    title: "多跳规则解析器",
+    stage: "Query 理解与规则匹配",
+    status: "shipped",
+    requirement: "conditional",
+    summary: "把用户事实转换成制度条件，再从条件跳到处罚或处理结果。",
+    solves: "解决 `我旷工两天会怎样` 这类问题只召回定义块，找不到最终处罚条款。",
+    implementation: "已抽出 policy_rule_resolver，把行为、次数/天数、阈值、命中规则和结论证据结构化，支持旷工、虚假报销、打听工资等样例。",
+    acceptance: "系统能解释 `2 < 3`，所以命中 `连续旷工3个工作日以下`，并返回扣薪和记过处分。",
+    boundaries: "当前规则解析覆盖核心样例；复杂金额、累计次数、跨制度引用还需要从制度文本抽取更多规则。",
+    term_definitions: [term("Multi-hop Resolver", "先找到线索或条件，再跳到最终规则/结论的解析器，常用于制度、法规和流程问答。")],
+    issue_solutions: [issueSolution("只召回包含用户原词的片段", "识别行为和问题面后，补充同义词与目标属性，例如处罚、处分、处理方式。", "用户问处罚却只得到违规定义。")],
+  }),
+  productionEnhancement({
+    id: "cross_encoder_reranker",
+    title: "Cross-encoder Reranker",
+    stage: "检索排序",
+    status: "interface",
+    requirement: "optional",
+    summary: "用 query+候选文本成对打分，把真正能回答问题的证据排在前面。",
+    solves: "解决初始召回候选很多、相似章节互相干扰、关键词命中但不能回答问题的问题。",
+    implementation: "已预留 RerankerClient、RERANKER_SERVICE_URL、RERANKER_PROVIDER；当前可接 bge-reranker-v2-m3 或企业内部 rerank 服务。",
+    acceptance: "启用外部 reranker 后，trace 展示 rerank 前后排序、score 和原因；服务不可用时保留确定性规则兜底。",
+    boundaries: "Rerank 只能重排已召回候选，不能补救没入库、没召回、权限漏过滤或 chunk 混段。",
+    term_definitions: [term("Cross-encoder", "把 query 和候选文本一起输入模型打相关性分数，通常比单独向量相似度更准但更慢。")],
+    issue_solutions: [issueSolution("把 reranker 当万能修复", "先保证召回池足够、权限正确、chunk 边界干净，再让 reranker 排序。", "候选池没有正确答案时，reranker 只能在错误候选里选一个。")],
+  }),
+  productionEnhancement({
+    id: "query_router",
+    title: "Query Router 查询路由",
+    stage: "请求编排",
+    status: "interface",
+    requirement: "required",
+    summary: "按问题类型选择精确条款、语义问答、规则解析、多跳检索、拒答或澄清。",
+    solves: "解决所有问题都走同一条 RAG 流程，导致精确条款、处罚问法和开放问法互相干扰。",
+    implementation: "Query understanding 已输出 exact_policy_lookup、asked_aspect、target_behavior 等字段；下一步抽象成独立 router 层。",
+    acceptance: "`二类违规是什么`、`二类违规处罚是什么`、`我旷工两天会怎样` 会进入不同检索和证据策略。",
+    boundaries: "Router 的输出必须可回放，不能用黑盒 prompt 随机决定流程；低置信度时应进入澄清或保守策略。",
+    term_definitions: [term("Query Router", "根据意图、风险和证据需求选择后续检索/工具/回答路径的路由器。")],
+    issue_solutions: [issueSolution("所有 query 都只做向量检索", "先识别问题面和风险等级，再选择 exact、hybrid、multi-hop 或普通 semantic search。", "精确规则问题会被语义相似章节冲掉。")],
+  }),
+  productionEnhancement({
+    id: "citation_span_highlight",
+    title: "引用 Span 高亮",
+    stage: "证据展示",
+    status: "interface",
+    requirement: "required",
+    summary: "引用不只指向文档，还要指向章节、条款号和命中的最小文本 span。",
+    solves: "解决来源链接正确但证据范围太大，用户无法判断结论到底来自哪句话。",
+    implementation: "后端已有章节边界截取和 citation metadata；下一步把 start/end span、clause_path 和前端高亮接上。",
+    acceptance: "点击来源能看到具体命中的条款，例如 `4. 弄虚作假行为` 的 4.1-4.4，而不是整篇制度。",
+    boundaries: "没有可靠位置偏移的 HTML/PDF 只能做章节级引用，不能伪造精确高亮。",
+    term_definitions: [term("Citation Span", "答案引用对应的最小证据片段，包含文档、章节、条款和文本范围。")],
+    issue_solutions: [issueSolution("来源只到文档级", "导入时保留 section_path、clause_no、chunk_id；回答时返回引用 span。", "用户需要自己在长制度里搜索，信任成本高。")],
+  }),
+  productionEnhancement({
+    id: "langfuse_otel_observability",
+    title: "Langfuse / OpenTelemetry 观测",
+    stage: "线上观测",
+    status: "interface",
+    requirement: "required",
+    summary: "把 query understanding、rewrite、embedding、retrieval、rerank、answer、feedback 都作为 trace/span 记录。",
+    solves: "解决线上回答错了以后无法判断是数据、检索、rerank、prompt、模型还是权限问题。",
+    implementation: "当前前端和后端已有本地 trace；已预留 Langfuse/OTel 观测链路说明，后续接 exporter 和采样策略。",
+    acceptance: "每次请求能通过 trace_id 回放输入输出、耗时、候选、rerank 分数、证据过滤原因和最终答案。",
+    boundaries: "观测平台不能记录敏感原文到外部；生产要做脱敏、采样和保留周期控制。",
+    term_definitions: [term("OpenTelemetry", "通用可观测性标准，用 trace、span、metric、log 串联分布式系统行为。")],
+    issue_solutions: [issueSolution("只有最终答案日志", "按节点记录输入、输出、耗时、状态和关键中间值，并统一 trace_id。", "问题定位只能猜，无法复现。")],
+  }),
+  productionEnhancement({
+    id: "incremental_sync_versioning",
+    title: "增量同步与版本管理",
+    stage: "数据治理",
+    status: "planned",
+    requirement: "required",
+    summary: "按源系统更新时间、版本号和删除状态同步文档，避免重复导入和旧制度残留。",
+    solves: "解决制度更新后向量库仍回答旧版本、源系统删除后知识库还搜得到的问题。",
+    implementation: "需要为 doc_id、source_updated_at、content_hash、embedding_version、deleted_at 建同步策略和幂等 upsert。",
+    acceptance: "同一文档更新后只保留当前版本可检索；下架文档从 chunk 表和向量索引同步删除或软删除。",
+    boundaries: "如果源系统没有可靠更新时间或删除事件，需要定期全量校验和 hash 对账。",
+    term_definitions: [term("Incremental Sync", "只处理新增、变更、删除数据的同步方式，比每次全量重建更快也更可审计。")],
+    issue_solutions: [issueSolution("只追加不删除", "同步任务必须处理 delete/disable 状态，并记录版本和 hash。", "用户可能拿到已经废止的制度答案。")],
+  }),
+  productionEnhancement({
+    id: "document_parser_multimodal",
+    title: "PDF / Word / 表格 / 多模态解析",
+    stage: "数据接入",
+    status: "planned",
+    requirement: "conditional",
+    summary: "解析附件、表格、扫描件和图片，保留标题层级、页码、表头和来源位置。",
+    solves: "解决制度正文在附件里、表格规则被拉平成乱码、扫描件无法检索的问题。",
+    implementation: "按文件类型接 unstructured、docling、pymupdf、OCR 或企业文档解析服务；解析结果统一成 PolicyChunk。",
+    acceptance: "附件中的表格条款能被检索并带页码/表格标题引用，解析失败进入导入质量报告。",
+    boundaries: "OCR 和复杂表格有误识别风险，高风险制度需要人工抽检或双解析器对比。",
+    term_definitions: [term("Document Parser", "把 PDF、Word、HTML、表格、图片等原始文件转换成可检索结构化文本的解析器。")],
+    issue_solutions: [issueSolution("附件只保存文件名不解析", "导入任务把附件解析结果作为独立 source，并保留 page/table/cell metadata。", "用户问附件里的规则时永远召回不到。")],
+  }),
+  productionEnhancement({
+    id: "prompt_injection_guardrails",
+    title: "Prompt Injection 与数据泄露护栏",
+    stage: "安全治理",
+    status: "planned",
+    requirement: "required",
+    summary: "识别忽略制度、泄露系统提示、导出全部知识库、越权索取等攻击输入和恶意文档内容。",
+    solves: "解决用户或文档诱导模型绕过证据、泄露内部信息或执行危险工具的问题。",
+    implementation: "在输入护栏、文档清洗、工具调用和答案阶段分别做注入检测、权限校验、拒答和审计记录。",
+    acceptance: "攻击型 query 不进入检索/生成，恶意文档内容不会被当作系统指令执行，trace 记录拒绝原因。",
+    boundaries: "护栏不能只靠关键词；必须结合权限、工具边界、系统提示隔离和输出审查。",
+    term_definitions: [term("Prompt Injection", "通过用户输入或文档内容诱导模型忽略原规则、泄露信息或执行非预期操作的攻击。")],
+    issue_solutions: [issueSolution("只在最终答案阶段拦截", "入口、检索文档、工具调用和输出都要做分层防护。", "恶意内容可能已经污染上下文或触发工具。")],
+  }),
+  productionEnhancement({
+    id: "cache_cost_control",
+    title: "缓存与成本控制",
+    stage: "性能与成本",
+    status: "planned",
+    requirement: "optional",
+    summary: "对 embedding、rerank、检索结果、模型回答和静态元数据做可失效缓存与预算控制。",
+    solves: "解决重复问题反复调用模型、延迟高、成本不可控、外部服务抖动的问题。",
+    implementation: "按 normalized_query、embedding_version、retrieval_filters、model_version 设计 cache key，并记录命中率和失效条件。",
+    acceptance: "重复查询命中缓存时 trace 显示 cache_hit，成本和耗时下降；制度更新后相关缓存被失效。",
+    boundaries: "权限相关结果不能跨用户共享缓存；制度更新、模型版本变化和过滤条件变化必须失效。",
+    term_definitions: [term("Cache Key", "决定一条缓存是否可复用的唯一键，必须包含会影响结果的模型、权限和过滤条件。")],
+    issue_solutions: [issueSolution("按原始 query 全局缓存答案", "缓存 key 加用户权限、过滤条件、模型版本和数据版本；高风险答案只缓存证据不缓存结论。", "不同用户可能看到彼此不该看的制度答案。")],
+  }),
+  productionEnhancement({
+    id: "external_knowledge_api",
+    title: "外部知识 API 与工具检索",
+    stage: "系统集成",
+    status: "planned",
+    requirement: "conditional",
+    summary: "当本地知识库不足时，按白名单调用 HR、OA、工单、搜索或业务系统 API 补充实时事实。",
+    solves: "解决 RAG 库只适合静态制度，无法回答实时审批状态、个人额度、最新流程状态的问题。",
+    implementation: "通过 tool registry 定义工具 schema、权限、超时、重试、降级和引用格式；router 决定何时调用。",
+    acceptance: "静态制度问题不调用外部 API；实时个人化问题必须带用户权限和 trace，并清楚标出数据来源。",
+    boundaries: "外部工具调用必须最小权限、可审计、可超时降级；不能让模型自由拼 URL 或 SQL。",
+    term_definitions: [term("Tool Registry", "集中声明可调用工具、参数 schema、权限、超时和返回契约的注册表。")],
+    issue_solutions: [issueSolution("让模型直接决定任意 API 调用", "只允许调用白名单工具，并由后端校验参数、权限和速率。", "可能造成越权查询、费用失控或业务系统误操作。")],
+  }),
+];
+
+const productionEnhancementById = new Map(productionEnhancements.map((item) => [item.id, item]));
+
+const enhancementNodeMap = {
+  request_intake: ["query_router", "cache_cost_control"],
+  input_guardrails: ["prompt_injection_guardrails"],
+  query_understanding: ["query_router", "multi_hop_resolver"],
+  query_rewrite: ["query_router"],
+  retrieval_plan: ["audience_permission_filter", "external_knowledge_api", "cache_cost_control"],
+  initial_retrieval: ["audience_permission_filter", "external_knowledge_api"],
+  rerank: ["cross_encoder_reranker"],
+  evidence_quality: ["citation_span_highlight", "prompt_injection_guardrails"],
+  answer_and_observe: ["structured_answer_contract", "bad_case_feedback", "eval_runner", "langfuse_otel_observability"],
+  ingest_list: ["incremental_sync_versioning", "ingest_quality_report"],
+  ingest_body: ["document_parser_multimodal"],
+  ingest_files: ["document_parser_multimodal"],
+  ingest_acl: ["audience_permission_filter"],
+  ingest_record: ["citation_span_highlight"],
+  ingest_upsert: ["incremental_sync_versioning", "cache_cost_control"],
+  ingest_validate: ["ingest_quality_report"],
+  ingest_delete_sync: ["incremental_sync_versioning"],
+  lf_trace: ["langfuse_otel_observability"],
+  lf_retrieval: ["langfuse_otel_observability"],
+  lf_llm: ["langfuse_otel_observability"],
+  lf_score: ["bad_case_feedback", "eval_runner", "langfuse_otel_observability"],
+  lf_dataset: ["eval_runner", "bad_case_feedback"],
+};
+
+function resolveProductionEnhancements(ids = []) {
+  return [...new Set(ids)].map((id) => productionEnhancementById.get(id)).filter(Boolean);
+}
+
+function mergeTermDefinitions(baseTerms = [], enhancements = []) {
+  const terms = Array.isArray(baseTerms) ? [...baseTerms] : [];
+  const seen = new Set(terms.map((entry) => entry.term || entry.name));
+  enhancements.forEach((enhancement) => {
+    (enhancement.term_definitions || []).forEach((entry) => {
+      const key = entry.term || entry.name;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      terms.push(entry);
+    });
+  });
+  return terms;
+}
+
+function withProductionEnhancements(details = {}, enhancements = []) {
+  if (!Array.isArray(enhancements) || enhancements.length === 0) return details;
+  return {
+    ...details,
+    production_enhancements: enhancements,
+    term_definitions: mergeTermDefinitions(details.term_definitions, enhancements),
+  };
+}
+
 function normalizeRequirement(value) {
   return ["required", "optional", "conditional"].includes(value) ? value : "required";
 }
@@ -557,10 +902,12 @@ function microStep(title, summary, details = {}) {
 function node(id, title, summary, extra = {}) {
   const defaults = nodeDefaults(id, title);
   const requirement = normalizeRequirement(extra.requirement || defaults.requirement || "required");
-  const details = {
+  const enhancementIds = extra.enhancements || defaults.enhancements || [];
+  const enhancements = resolveProductionEnhancements(enhancementIds);
+  const details = withProductionEnhancements({
     ...(defaults.details || {}),
     ...(extra.details || {}),
-  };
+  }, enhancements);
   const requirementReason = extra.requirementReason || details.requirement_reason || requirementDescriptions[requirement];
   return {
     id,
@@ -570,6 +917,7 @@ function node(id, title, summary, extra = {}) {
     status: "ok",
     ...defaults,
     ...extra,
+    enhancements,
     requirement,
     requirementReason,
     details: withLearningDetails(details, { id, title, summary }, requirement, requirementReason),
@@ -862,6 +1210,7 @@ function nodeDefaults(id, title) {
   ];
   return {
     innerSteps,
+    enhancements: enhancementNodeMap[id] || [],
     details: {
       ...(ragNodeDetailCatalog[id] || {}),
       inner_step_count: innerSteps.length,
@@ -1028,6 +1377,58 @@ function buildRagWorkflow(traceData) {
   };
 }
 
+
+function enhancementWorkflowNode(id, sequence, mode = "sequential") {
+  const enhancement = productionEnhancementById.get(id);
+  return node(id, enhancement?.title || id, enhancement?.summary || "生产 RAG 增强项。", {
+    sequence,
+    mode,
+    requirement: enhancement?.requirement || "optional",
+    requirementReason: enhancement ? `${enhancementStatusLabels[enhancement.status]}：${enhancement.boundaries}` : undefined,
+    enhancements: [id],
+    details: {
+      stage: enhancement?.stage,
+      implementation_status: enhancementStatusLabels[enhancement?.status] || "待接入",
+      why: enhancement?.solves,
+    },
+  });
+}
+
+function buildProductionRagMaturityWorkflow() {
+  const rows = [
+    { type: "serial", nodes: [enhancementWorkflowNode("eval_runner", "01"), enhancementWorkflowNode("bad_case_feedback", "02")] },
+    {
+      type: "parallel_group",
+      id: "production_quality_parallel",
+      title: "本轮优化：检索质量并行增强",
+      summary: "Query 路由、规则多跳、权限过滤、外部知识和 rerank 可以按场景并行准备，再在证据质量阶段汇聚。",
+      branches: [
+        { title: "理解与路由", nodes: [enhancementWorkflowNode("query_router", "03A", "parallel"), enhancementWorkflowNode("multi_hop_resolver", "03B", "parallel")] },
+        { title: "召回与排序", nodes: [enhancementWorkflowNode("audience_permission_filter", "03C", "parallel"), enhancementWorkflowNode("cross_encoder_reranker", "03D", "parallel")] },
+        { title: "证据扩展", nodes: [enhancementWorkflowNode("citation_span_highlight", "03E", "parallel"), enhancementWorkflowNode("external_knowledge_api", "03F", "parallel")] },
+      ],
+    },
+    { type: "merge", title: "检索质量汇聚", nodes: [enhancementWorkflowNode("structured_answer_contract", "04", "merge")] },
+    {
+      type: "parallel_group",
+      id: "production_ingest_ops_parallel",
+      title: "本轮优化：数据与运维治理",
+      summary: "数据导入、版本同步、解析、安全、观测和成本控制并不是一条线，它们围绕 RAG 主链路形成治理层。",
+      branches: [
+        { title: "数据治理", nodes: [enhancementWorkflowNode("ingest_quality_report", "05A", "parallel"), enhancementWorkflowNode("incremental_sync_versioning", "05B", "parallel"), enhancementWorkflowNode("document_parser_multimodal", "05C", "parallel")] },
+        { title: "安全治理", nodes: [enhancementWorkflowNode("prompt_injection_guardrails", "05D", "parallel")] },
+        { title: "观测与成本", nodes: [enhancementWorkflowNode("langfuse_otel_observability", "05E", "parallel"), enhancementWorkflowNode("cache_cost_control", "05F", "parallel")] },
+      ],
+    },
+  ];
+  return {
+    id: "production-rag-maturity",
+    title: "生产 RAG 成熟度",
+    summary: "用 15 个生产增强项说明当前系统距离真实企业 RAG 还需要哪些质量、治理、安全和观测能力。",
+    rows: hydrateRows(rows, new Map()),
+  };
+}
+
 function extraWorkflowRows(id) {
   const rowsByWorkflow = {
     "embedding-retrieval": [
@@ -1079,6 +1480,7 @@ function workflowFromRows(id, title, summary, rows) {
 
 const workflowDefinitions = [
   { id: "rag-core", title: "RAG 基础流程", build: buildRagWorkflow },
+  { id: "production-rag-maturity", title: "生产 RAG 成熟度", build: buildProductionRagMaturityWorkflow },
   {
     id: "embedding-retrieval",
     title: "Embedding 检索流程",
@@ -1270,6 +1672,8 @@ function selectWorkflowNode(item, nodeButton) {
 }
 
 function renderWorkflowNode(item, rowIndex) {
+  const enhancements = Array.isArray(item.enhancements) ? item.enhancements : (item.details?.production_enhancements || []);
+  const hasCurrentEnhancement = enhancements.some((enhancement) => enhancement.current);
   const button = document.createElement("article");
   button.setAttribute("role", "button");
   button.tabIndex = 0;
@@ -1279,7 +1683,8 @@ function renderWorkflowNode(item, rowIndex) {
     `mode-${item.mode || "sequential"}`,
     `status-${item.status || "ok"}`,
     `requirement-${normalizeRequirement(item.requirement)}`,
-  ].join(" ");
+    hasCurrentEnhancement ? "enhancement-current" : "",
+  ].filter(Boolean).join(" ");
 
   const top = document.createElement("div");
   top.className = "tree-node-top";
@@ -1307,6 +1712,25 @@ function renderWorkflowNode(item, rowIndex) {
   requirementNote.textContent = item.requirementReason || item.details?.requirement_reason || requirementDescriptions[normalizeRequirement(item.requirement)];
 
   button.append(top, title, summary, requirementNote);
+
+  if (enhancements.length > 0) {
+    const enhancementBadges = document.createElement("div");
+    enhancementBadges.className = "enhancement-badge-row node-enhancement-badges";
+    enhancements.slice(0, 3).forEach((enhancement) => {
+      const badge = document.createElement("span");
+      badge.className = `enhancement-status-badge status-${enhancement.status || "planned"}`;
+      badge.textContent = `${enhancement.current ? "本轮优化 · " : ""}${enhancementStatusLabels[enhancement.status] || "待接入"}`;
+      badge.title = enhancement.title || enhancement.id;
+      enhancementBadges.appendChild(badge);
+    });
+    if (enhancements.length > 3) {
+      const more = document.createElement("span");
+      more.className = "enhancement-more-badge";
+      more.textContent = `+${enhancements.length - 3}`;
+      enhancementBadges.appendChild(more);
+    }
+    button.appendChild(enhancementBadges);
+  }
 
   if (Array.isArray(item.innerSteps) && item.innerSteps.length > 0) {
     const innerList = document.createElement("div");

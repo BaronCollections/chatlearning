@@ -175,3 +175,50 @@ def test_workflow_node_details_explain_possible_issues_and_solutions():
     assert ".issue-solution-item" in app_css
     assert ".issue-title" in app_css
     assert ".solution-text" in app_css
+
+
+
+def test_workflow_marks_all_production_rag_enhancements_and_current_upgrades():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    app_css = (WEB_DIR / "app.css").read_text(encoding="utf-8")
+
+    assert "productionEnhancements" in app_js
+    assert "生产 RAG 成熟度" in app_js
+    assert "本轮优化" in app_js
+    assert "renderEnhancementDetail" in app_js
+    assert "enhancement-current" in app_js
+    assert "enhancement-status-badge" in app_js
+
+    expected_ids = [
+        "eval_runner",
+        "bad_case_feedback",
+        "ingest_quality_report",
+        "audience_permission_filter",
+        "structured_answer_contract",
+        "multi_hop_resolver",
+        "cross_encoder_reranker",
+        "query_router",
+        "citation_span_highlight",
+        "langfuse_otel_observability",
+        "incremental_sync_versioning",
+        "document_parser_multimodal",
+        "prompt_injection_guardrails",
+        "cache_cost_control",
+        "external_knowledge_api",
+    ]
+    for enhancement_id in expected_ids:
+        assert enhancement_id in app_js
+
+    assert "解决的问题" in app_js
+    assert "落地方式" in app_js
+    assert "验收方式" in app_js
+    assert "边界条件" in app_js
+    assert "已落地" in app_js
+    assert "接口已预留" in app_js
+    assert "待接入" in app_js
+
+    assert ".trace-tree-node.enhancement-current" in app_css
+    assert ".enhancement-status-badge.status-shipped" in app_css
+    assert ".enhancement-status-badge.status-interface" in app_css
+    assert ".enhancement-status-badge.status-planned" in app_css
+    assert ".enhancement-detail" in app_css

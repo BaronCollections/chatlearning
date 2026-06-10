@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from enterprise_rag_mvp.bad_cases import ALLOWED_FEEDBACK_TYPES, append_bad_case_record, build_bad_case_record
 from enterprise_rag_mvp.cli import DEFAULT_DSN, DEFAULT_EMBEDDING_URL
 from enterprise_rag_mvp.embedding_client import EmbeddingClient
 from enterprise_rag_mvp.pgvector_store import PgVectorStore
@@ -27,6 +28,30 @@ class ChatRequest(BaseModel):
         return value
 
 
+class FeedbackRequest(BaseModel):
+    query: str = Field(min_length=1)
+    feedback_type: str = Field(min_length=1)
+    answer: str = ""
+    trace_id: str | None = None
+    comment: str | None = None
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("query")
+    @classmethod
+    def query_must_contain_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must contain non-whitespace text")
+        return value
+
+    @field_validator("feedback_type")
+    @classmethod
+    def feedback_type_must_be_supported(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized not in ALLOWED_FEEDBACK_TYPES:
+            raise ValueError(f"unsupported feedback_type: {normalized}")
+        return normalized
+
+
 def _web_dir() -> Path:
     return Path(__file__).resolve().parent / "web"
 
@@ -41,8 +66,13 @@ def _default_runner(query: str, top_k: int) -> dict[str, Any]:
     return run_chat_trace(query, embedding_client=embedding_client, store=store, top_k=top_k, reranker_client=reranker_client)
 
 
-def create_app(*, chat_runner: Callable[[str, int], dict[str, Any]] | None = None) -> FastAPI:
+def create_app(
+    *,
+    chat_runner: Callable[[str, int], dict[str, Any]] | None = None,
+    bad_case_path: str | Path | None = None,
+) -> FastAPI:
     runner = chat_runner or _default_runner
+    feedback_path = Path(bad_case_path or os.getenv("RAG_BAD_CASE_PATH", "data/bad_cases.jsonl"))
     app = FastAPI(title="Enterprise RAG Trace Chat")
     web_dir = _web_dir()
     app.mount("/static", StaticFiles(directory=web_dir), name="static")
@@ -60,6 +90,28 @@ def create_app(*, chat_runner: Callable[[str, int], dict[str, Any]] | None = Non
                 status_code=503,
                 detail={"message": "RAG pipeline unavailable", "error": str(exc)},
             ) from exc
+
+    @app.post("/api/feedback")
+    def collect_feedback(request: FeedbackRequest) -> dict[str, Any]:
+        try:
+            record = build_bad_case_record(request.model_dump())
+            append_bad_case_record(feedback_path, record)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Invalid feedback payload", "error": str(exc)},
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"message": "Feedback storage unavailable", "error": str(exc)},
+            ) from exc
+        return {
+            "status": "ok",
+            "stored": True,
+            "feedback_type": record.feedback_type,
+            "raw_trace_stored": record.raw_trace_stored,
+        }
 
     return app
 

@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from enterprise_rag_mvp.web_app import create_app
@@ -70,3 +72,38 @@ def test_chat_endpoint_returns_service_error_when_runner_fails():
     assert response.status_code == 503
     assert response.json()["detail"]["message"] == "RAG pipeline unavailable"
     assert "embedding service unavailable" in response.json()["detail"]["error"]
+
+
+def test_feedback_endpoint_stores_bad_case_without_raw_trace(tmp_path):
+    bad_case_path = tmp_path / "bad_cases.jsonl"
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}, bad_case_path=bad_case_path))
+
+    response = client.post(
+        "/api/feedback",
+        json={
+            "query": "二类违规的处罚是什么",
+            "feedback_type": "missing_clause",
+            "answer": "只返回了定义，缺少处罚",
+            "trace_id": "trace-1",
+            "results": [
+                {
+                    "doc_id": "policy-16",
+                    "chunk_id": "policy-16:section-2",
+                    "text": "不应该保存完整制度正文",
+                    "citation": {
+                        "title": "云谷人守则-员工纪律制度",
+                        "url": "https://work.yungu.org/policyDetail/16",
+                        "category": "云谷人守则",
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["stored"] is True
+    assert response.json()["raw_trace_stored"] is False
+    rows = [json.loads(line) for line in bad_case_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["feedback_type"] == "missing_clause"
+    assert rows[0]["citations"][0]["title"] == "云谷人守则-员工纪律制度"
+    assert "不应该保存完整制度正文" not in bad_case_path.read_text(encoding="utf-8")

@@ -597,6 +597,81 @@ button {
   background: #f7fdff;
 }
 
+
+.trace-tree-node.enhancement-current {
+  border-top-color: #16a34a;
+  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.12);
+}
+
+.trace-tree-node.enhancement-current::before {
+  content: "本轮优化";
+  position: absolute;
+  top: -11px;
+  right: 10px;
+  border: 1px solid #bbf7d0;
+  border-radius: 999px;
+  background: #f0fdf4;
+  color: #166534;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.enhancement-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.node-enhancement-badges {
+  padding-top: 2px;
+}
+
+.enhancement-status-badge,
+.enhancement-current-badge,
+.enhancement-more-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.enhancement-current-badge {
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.enhancement-status-badge.status-shipped {
+  border: 1px solid #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.enhancement-status-badge.status-interface {
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.enhancement-status-badge.status-planned {
+  border: 1px dashed #fbbf24;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.enhancement-more-badge {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+
 .tree-node-top {
   display: flex;
   align-items: center;
@@ -834,6 +909,7 @@ pre {
 .choice-box,
 .requirement-detail,
 .data-flow,
+.enhancement-detail,
 .term-list,
 .pitfall-list,
 .option-list,
@@ -852,6 +928,7 @@ pre {
 .choice-box h3,
 .requirement-detail h3,
 .data-flow h3,
+.enhancement-detail h3,
 .term-list h3,
 .pitfall-list h3,
 .option-list h3,
@@ -906,6 +983,79 @@ pre {
 .choice-box ul {
   margin: 10px 0 0;
   padding-left: 18px;
+}
+
+
+
+.enhancement-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.enhancement-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #f59e0b;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 11px;
+}
+
+.enhancement-card.status-shipped {
+  border-left-color: #16a34a;
+}
+
+.enhancement-card.status-interface {
+  border-left-color: #2563eb;
+}
+
+.enhancement-card.status-planned {
+  border-left-style: dashed;
+  border-left-color: #d97706;
+}
+
+.enhancement-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.enhancement-card h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.enhancement-summary {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.enhancement-fields {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 7px 10px;
+  margin: 0;
+}
+
+.enhancement-fields dt {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.enhancement-fields dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .term-list dl {
