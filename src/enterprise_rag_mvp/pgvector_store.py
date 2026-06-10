@@ -11,25 +11,45 @@ def build_vector_literal(vector: Sequence[float]) -> str:
     return "[" + ",".join(str(float(value)) for value in vector) + "]"
 
 
-def _hybrid_terms(query_text: str, metadata_filters: dict | None) -> list[str]:
-    terms: list[str] = []
-    metadata_filters = metadata_filters or {}
-    for key in ["target_terms", "target_section", "target_clause", "target_subclause"]:
-        value = metadata_filters.get(key)
-        if isinstance(value, list):
-            terms.extend(str(item) for item in value if item)
-        elif value:
-            terms.append(str(value))
-    for token in query_text.replace("？", " ").replace("?", " ").split():
-        token = token.strip()
-        if len(token) >= 2:
-            terms.append(token)
+def _dedupe_terms(terms: list[str]) -> list[str]:
     deduped: list[str] = []
     for term in terms:
         term = term.strip()
         if term and term not in deduped:
             deduped.append(term)
     return deduped
+
+
+def _terms_from_filter_value(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    if value:
+        return [str(value)]
+    return []
+
+
+def _query_terms(query_text: str) -> list[str]:
+    terms: list[str] = []
+    for token in query_text.replace("？", " ").replace("?", " ").split():
+        token = token.strip()
+        if len(token) >= 2:
+            terms.append(token)
+    return _dedupe_terms(terms)
+
+
+def _hybrid_term_groups(query_text: str, metadata_filters: dict | None) -> tuple[list[str], list[str], list[str]]:
+    metadata_filters = metadata_filters or {}
+    primary_terms: list[str] = []
+    for key in ["target_terms", "target_clause", "target_subclause"]:
+        primary_terms.extend(_terms_from_filter_value(metadata_filters.get(key)))
+    secondary_terms = _terms_from_filter_value(metadata_filters.get("target_section"))
+    query_terms = _query_terms(query_text)
+    return _dedupe_terms(primary_terms), _dedupe_terms(secondary_terms), query_terms
+
+
+def _hybrid_terms(query_text: str, metadata_filters: dict | None) -> list[str]:
+    primary_terms, secondary_terms, query_terms = _hybrid_term_groups(query_text, metadata_filters)
+    return _dedupe_terms([*primary_terms, *secondary_terms, *query_terms])
 
 
 class PgVectorStore:
@@ -89,11 +109,15 @@ class PgVectorStore:
         top_k: int,
         metadata_filters: dict | None = None,
     ) -> list[SearchResult]:
-        terms = _hybrid_terms(query_text, metadata_filters)
+        primary_terms, secondary_terms, query_terms = _hybrid_term_groups(query_text, metadata_filters)
+        terms = _dedupe_terms([*primary_terms, *secondary_terms, *query_terms])
         if not terms:
             return self.search(query_embedding, top_k=top_k)
 
         patterns = [f"%{term}%" for term in terms]
+        primary_patterns = [f"%{term}%" for term in primary_terms]
+        secondary_patterns = [f"%{term}%" for term in secondary_terms]
+        query_patterns = [f"%{term}%" for term in query_terms]
         vector = build_vector_literal(query_embedding)
         keyword_limit = max(top_k * 4, top_k)
         dense_limit = max(top_k * 2, top_k)
@@ -125,9 +149,13 @@ class PgVectorStore:
                     c.metadata::text,
                     e.embedding <=> %s::vector AS distance,
                     (
+                      CASE WHEN c.chunk_text ILIKE ANY(%s::text[]) THEN 8.0 ELSE 0.0 END +
+                      CASE WHEN array_to_string(c.heading_path, ' ') ILIKE ANY(%s::text[]) THEN 5.0 ELSE 0.0 END +
+                      CASE WHEN c.metadata::text ILIKE ANY(%s::text[]) THEN 3.0 ELSE 0.0 END +
                       CASE WHEN c.chunk_text ILIKE ANY(%s::text[]) THEN 2.0 ELSE 0.0 END +
-                      CASE WHEN array_to_string(c.heading_path, ' ') ILIKE ANY(%s::text[]) THEN 3.0 ELSE 0.0 END +
-                      CASE WHEN c.metadata::text ILIKE ANY(%s::text[]) THEN 2.5 ELSE 0.0 END
+                      CASE WHEN array_to_string(c.heading_path, ' ') ILIKE ANY(%s::text[]) THEN 2.0 ELSE 0.0 END +
+                      CASE WHEN c.metadata::text ILIKE ANY(%s::text[]) THEN 1.5 ELSE 0.0 END +
+                      CASE WHEN c.chunk_text ILIKE ANY(%s::text[]) THEN 1.0 ELSE 0.0 END
                     ) AS keyword_score
                   FROM rag_chunk_embeddings_bge_m3 e
                   JOIN rag_chunks c ON c.chunk_id = e.chunk_id
@@ -157,9 +185,13 @@ class PgVectorStore:
                     vector,
                     dense_limit,
                     vector,
-                    patterns,
-                    patterns,
-                    patterns,
+                    primary_patterns,
+                    primary_patterns,
+                    primary_patterns,
+                    secondary_patterns,
+                    secondary_patterns,
+                    secondary_patterns,
+                    query_patterns,
                     patterns,
                     patterns,
                     patterns,

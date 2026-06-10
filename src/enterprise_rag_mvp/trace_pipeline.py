@@ -394,6 +394,104 @@ def _metadata_text(chunk: Any) -> str:
     return " ".join(values)
 
 
+def _section_marker_variants(section: str | None) -> list[str]:
+    if not section:
+        return []
+    return [
+        f"（一）{section}",
+        f"（二）{section}",
+        f"（三）{section}",
+        f"{section}：",
+        f"{section}:",
+    ]
+
+
+def _has_section_definition(text: str, target_section: str | None) -> bool:
+    if not text or not target_section:
+        return False
+    if any(marker in text for marker in _section_marker_variants(str(target_section))):
+        return True
+    return bool(re.search(rf"{re.escape(str(target_section))}\s*[：:,，]?\s*指", text))
+
+
+def _is_reference_only_text(text: str, understanding: dict[str, Any]) -> bool:
+    if not text or understanding.get("retrieval_intent") != "exact_policy_lookup":
+        return False
+    target_markers = [
+        str(item)
+        for item in [
+            understanding.get("target_clause"),
+            understanding.get("target_subclause"),
+            understanding.get("target_section"),
+            *(understanding.get("target_terms") or []),
+        ]
+        if item
+    ]
+    if not any(marker in text for marker in target_markers):
+        return False
+    has_definition = _has_section_definition(text, understanding.get("target_section"))
+    target_clause = understanding.get("target_clause")
+    if target_clause and str(target_clause) in text:
+        has_definition = True
+    reference_words = ["参见", "详见", "参考", "参照", "见《", "具体参见"]
+    return not has_definition and any(word in text for word in reference_words)
+
+
+def _has_target_metadata_scope(metadata: dict[str, Any], understanding: dict[str, Any]) -> bool:
+    section_path = metadata.get("section_path") or []
+    target_section = understanding.get("target_section")
+    target_clause = understanding.get("target_clause")
+    if target_clause and (metadata.get("clause_title") == target_clause or target_clause in section_path):
+        return True
+    if target_section and (metadata.get("section_title") == target_section or target_section in section_path):
+        return True
+    return False
+
+
+def _is_direct_target_evidence(result: SearchResult, understanding: dict[str, Any]) -> bool:
+    if understanding.get("retrieval_intent") != "exact_policy_lookup":
+        return True
+    text = result.chunk.text
+    metadata = result.chunk.metadata or {}
+    if _is_reference_only_text(text, understanding):
+        return False
+    target_clause = understanding.get("target_clause")
+    target_subclause = understanding.get("target_subclause")
+    target_section = understanding.get("target_section")
+    if target_clause and str(target_clause) in text:
+        return True
+    if target_subclause and str(target_subclause) in text:
+        return True
+    if _has_section_definition(text, str(target_section) if target_section else None):
+        return True
+    if _has_target_metadata_scope(metadata, understanding):
+        return True
+    scope = metadata.get("scope") if isinstance(metadata, dict) else None
+    return bool(isinstance(scope, dict) and scope.get("applied"))
+
+
+def _filter_target_evidence(results: list[SearchResult], understanding: dict[str, Any]) -> tuple[list[SearchResult], dict[str, Any]]:
+    if understanding.get("retrieval_intent") != "exact_policy_lookup":
+        return results, {"applied": False, "reason": "非精确制度查询，不过滤候选证据。"}
+    direct_results = [result for result in results if _is_direct_target_evidence(result, understanding)]
+    if not direct_results:
+        return [], {
+            "applied": True,
+            "input_count": len(results),
+            "output_count": 0,
+            "dropped_chunk_ids": [result.chunk.chunk_id for result in results],
+            "reason": "没有找到明确的目标章节/条款本体，拒绝使用不相关候选生成答案。",
+        }
+    dropped = [result.chunk.chunk_id for result in results if result not in direct_results]
+    return direct_results, {
+        "applied": True,
+        "input_count": len(results),
+        "output_count": len(direct_results),
+        "dropped_chunk_ids": dropped,
+        "reason": "精确制度查询只保留目标章节/条款本体证据，过滤仅参见其它制度的引用型片段。",
+    }
+
+
 def _rerank_results(
     query: str,
     results: list[SearchResult],
@@ -424,11 +522,21 @@ def _rerank_results(
         if target_section and (metadata.get("section_title") == target_section or target_section in section_path or target_section in "".join(chunk.heading_path)):
             exact_bonus += 3.0
             reasons.append("命中目标章节")
+        if target_section and _has_section_definition(chunk.text, str(target_section)):
+            exact_bonus += 4.0
+            reasons.append("命中章节定义正文")
         if target_clause and (metadata.get("clause_title") == target_clause or target_clause in section_path or target_clause in chunk.text):
             exact_bonus += 4.0
             reasons.append("命中目标条款组")
 
         penalty = 0.0
+        if understanding.get("retrieval_intent") == "exact_policy_lookup" and target_section:
+            if not _is_direct_target_evidence(result, understanding):
+                penalty += 3.0
+                reasons.append("缺少目标章节/条款本体，已降权")
+            if _is_reference_only_text(chunk.text, understanding):
+                penalty += 6.0
+                reasons.append("仅为参见型片段，不能作为最终证据")
         leaked = [item for item in [*exclude_sections, *exclude_clauses] if item and item in haystack]
         if leaked:
             penalty += 0.8 * len(leaked)
@@ -1423,7 +1531,8 @@ def run_chat_trace(
     )
 
     scoped_results = _scope_results(reranked_results, understanding)
-    deduped_results, citation_merge = _dedupe_evidence(scoped_results, understanding)
+    target_filtered_results, target_evidence_filter = _filter_target_evidence(scoped_results, understanding)
+    deduped_results, citation_merge = _dedupe_evidence(target_filtered_results, understanding)
     final_results = deduped_results[:top_k]
     quality_start = time.perf_counter()
     quality_checks, context_blocks, scope_guard = _quality_checks(
@@ -1443,6 +1552,7 @@ def run_chat_trace(
                 "context_blocks": context_blocks,
                 "scope_guard": scope_guard,
                 "citation_merge": citation_merge,
+                "target_evidence_filter": target_evidence_filter,
                 "term_definitions": [
                     _term("Faithfulness", "回答中的结论是否能被检索证据支持。"),
                     _term("Citation", "让用户能追溯到来源文档、标题、页码或 chunk 的引用信息。"),
@@ -1485,6 +1595,13 @@ def run_chat_trace(
                     details={"context_blocks": context_blocks, "scope_guard": scope_guard},
                     duration_ms=0,
                     status=scope_guard["status"],
+                ),
+                _step(
+                    key="filter_reference_only_evidence",
+                    title="过滤参见型片段",
+                    summary="精确制度查询只保留目标章节/条款本体，参见其它制度的片段不能当答案证据。",
+                    details=target_evidence_filter,
+                    duration_ms=0,
                 ),
                 _step(
                     key="merge_duplicate_citations",

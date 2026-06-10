@@ -70,8 +70,9 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 4. Scope-aware Rerank：重排阶段会把目标章节、目标条款和目标子条款作为强特征；相邻但不属于目标的问题会被降权。Rerank 是业务可选增强，但在制度问答里很推荐。
 5. Span Extraction：如果历史数据里仍然存在粗 chunk，系统会在命中的 chunk 内二次截取目标范围。例如从 `（二）二类违规行为` 截到 `（三）三类违规行为` 之前，或从 `4. 弄虚作假行为` 截到 `5. 破坏学校管理秩序行为` 之前。
 6. Scope Guard：证据质量检查会记录是否成功收窄范围，并检查结果里是否混入竞争章节。这个检查用于调试和教学，也用于后续接入 LLM 前的安全闸。
-7. Citation Merge：如果同一篇制度的多个相邻 chunk 都命中，展示层会按文档、章节和范围合并引用，避免重复来源刷屏。
-8. 可追溯链接：云谷制度链接使用真实详情地址 `https://work.yungu.org/policyDetail/{importInformationId}`，不会生成未验证的前端路由。
+7. 参见型片段过滤：如果命中的片段只是“具体参见《某制度》”，它只能说明线索在哪里，不能作为最终答案证据。系统会优先保留直接包含定义、章节或条款正文的 direct evidence。
+8. Citation Merge：如果同一篇制度的多个相邻 chunk 都命中，展示层会按文档、章节和范围合并引用，避免重复来源刷屏。
+9. 可追溯链接：云谷制度链接使用真实详情地址 `https://work.yungu.org/policyDetail/{importInformationId}`，不会生成未验证的前端路由。
 
 是否每一步都必须做：结构化切块、来源 metadata、引用链接是制度问答的基础；Hybrid Search、Rerank、Scope Guard 属于真实业务强烈建议项；Langfuse 观测、离线评测、权限过滤、附件解析会随着生产化程度逐步补齐。
 
@@ -97,6 +98,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 - Rerank：对初始召回结果重新排序，减少“向量相似但业务不相关”的候选进入答案。
 - Span Extraction：在命中的 chunk 内继续抽取目标段落，例如只截取 `4. 弄虚作假行为` 到下一个同级标题之前。
 - Scope Guard：范围护栏，检查答案证据是否混入用户没有问的相邻章节，例如问“二类违规”时不能带出“三类违规”。
+- Direct evidence：直接证据，指文本本身包含目标章节、定义或条款正文；只写“参见某制度”的片段不算直接证据。
 - Citation Merge：引用合并，把同一篇制度、同一章节的多个相邻 chunk 合并展示，避免 `[1]`、`[2]`、`[3]` 全是同一个来源。
 - Langfuse：RAG/Agent 观测平台，可记录 trace、span、输入输出、耗时、评分和回放。
 

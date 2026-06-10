@@ -1,6 +1,7 @@
 import pytest
 
 from enterprise_rag_mvp.models import PolicyChunk, SearchResult
+from enterprise_rag_mvp.pgvector_store import _hybrid_term_groups
 from enterprise_rag_mvp.trace_pipeline import run_chat_trace
 
 
@@ -44,6 +45,22 @@ class FakeEmbeddingClient:
 
 def _step(response: dict, key: str) -> dict:
     return next(step for step in response["steps"] if step["key"] == key)
+
+
+def test_hybrid_term_groups_prioritize_clause_terms_before_section_terms():
+    primary, secondary, query_terms = _hybrid_term_groups(
+        "弄虚作假行为是什么？",
+        {
+            "target_terms": ["弄虚作假", "弄虚作假行为", "虚假报销"],
+            "target_section": "二类违规行为",
+            "target_clause": "4. 弄虚作假行为",
+        },
+    )
+
+    assert primary[:3] == ["弄虚作假", "弄虚作假行为", "虚假报销"]
+    assert "4. 弄虚作假行为" in primary
+    assert secondary == ["二类违规行为"]
+    assert query_terms == ["弄虚作假行为是什么"]
 
 
 def test_run_chat_trace_returns_answer_steps_and_memory_results():
@@ -304,6 +321,90 @@ def test_exact_clause_query_uses_hybrid_search_and_scopes_answer_to_clause_group
     assert evidence["details"]["scope_guard"]["status"] == "ok"
     assert evidence["details"]["context_blocks"][0]["scope"]["applied"] is True
 
+
+
+
+def test_exact_clause_query_returns_no_answer_when_direct_evidence_is_missing():
+    class IrrelevantStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            return [
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="mentor-unrelated",
+                        doc_id="yungu-policy-3000",
+                        block_id="mentor-unrelated",
+                        text="导师制说明，讨论学生个别支持、家校联结和班级规划。",
+                        heading_path=["中小学教育教学相关制度", "导师制"],
+                        metadata={
+                            "source": "yungu_policy_system",
+                            "import_information_id": 3000,
+                            "title": "杭州云谷学校导师制",
+                            "policy_category_type_name": "中小学教育教学相关制度",
+                            "source_url": "https://work.yungu.org/policyDetail/3000",
+                        },
+                    ),
+                    distance=0.01,
+                )
+            ]
+
+    response = run_chat_trace(
+        "弄虚作假行为是什么？",
+        embedding_client=FakeEmbeddingClient(),
+        store=IrrelevantStore(),
+        top_k=3,
+    )
+
+    assert response["results"] == []
+    assert "没有在当前制度样本中检索到足够相关的内容" in response["answer"]
+    evidence = _step(response, "evidence_quality")
+    assert evidence["details"]["target_evidence_filter"]["applied"] is True
+    assert evidence["details"]["target_evidence_filter"]["output_count"] == 0
+
+def test_exact_section_query_prefers_definition_over_cross_reference():
+    reference_text = (
+        "薪酬制度补充说明。二类违规行为，具体参见《云谷人守则——员工纪律制度》。"
+        "员工对薪酬收入有疑义，请联系人力资源部申请复核。"
+    )
+    definition_text = (
+        "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、破坏学校管理秩序等"
+        "致使学校经济、形象、声誉遭受严重损害的行为，是比较严重的违规行为。"
+        "1.师德师风相关的违规行为 2. 违反保密义务行为 3. 侵犯学校权益行为 4. 弄虚作假行为 "
+        "（三）三类违规行为 三类违规行为：指一般的违规行为。"
+    )
+
+    class CrossReferenceStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            return [
+                SearchResult(
+                    chunk=_discipline_chunk(
+                        chunk_id="salary-reference",
+                        text=reference_text,
+                        metadata={
+                            "title": "杭州云谷学校薪酬制度",
+                            "policy_category_type_name": "HR政策及知识库",
+                            "import_information_id": 192,
+                            "source_url": "https://work.yungu.org/policyDetail/192",
+                        },
+                    ),
+                    distance=0.01,
+                ),
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-definition", text=definition_text), distance=0.2),
+            ]
+
+    response = run_chat_trace(
+        "二类违规是什么",
+        embedding_client=FakeEmbeddingClient(),
+        store=CrossReferenceStore(),
+        top_k=3,
+    )
+
+    assert "二类违规行为：指违反师德师风" in response["answer"]
+    assert "具体参见" not in response["answer"]
+    assert "杭州云谷学校薪酬制度" not in response["answer"]
+    assert "（三）三类违规行为" not in response["answer"]
+    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
+    evidence = _step(response, "evidence_quality")
+    assert evidence["details"]["scope_guard"]["status"] == "ok"
 
 def test_exact_section_query_deduplicates_sources_and_excludes_competing_sections():
     section_text = (

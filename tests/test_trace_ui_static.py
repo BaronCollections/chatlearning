@@ -118,6 +118,12 @@ def test_workflow_explains_terms_and_required_vs_optional_steps():
     assert "BM25" in app_js
     assert "pgvector" in app_js
     assert "Langfuse" in app_js
+    assert "Hybrid Search" in app_js
+    assert "章节边界截取" in app_js
+    assert "Scope Guard" in app_js
+    assert "参见型片段过滤" in app_js
+    assert "Direct evidence" in app_js
+    assert "Citation Merge" in app_js
     assert "requirement:" in app_js
     assert "required" in app_js
     assert "optional" in app_js

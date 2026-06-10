@@ -656,6 +656,7 @@ const ragInnerStepCatalog = {
     microStep("相关度阈值", "低于阈值时不强答，改为提示证据不足或反问。", { quality_checks: [{ name: "relevance_threshold", status: "ok", reason: "证据不足时强答会制造幻觉。" }] }),
     microStep("章节边界截取", "从粗 chunk 中按 start_marker/end_marker 抽取目标章节，避免带出相邻条款。", { term_definitions: [term("Span extraction", "从较长文本中截取真正回答当前问题的片段。 ")] }),
     microStep("Scope Guard", "检查答案和 context 是否泄露了一类/三类违规等竞争章节。", { quality_checks: [{ name: "scope_guard", status: "ok", reason: "精确查询只能回答用户询问的章节。" }] }),
+    microStep("参见型片段过滤", "如果候选只是在别的制度里写“具体参见某制度”，不能把它当作最终答案证据。", { term_definitions: [term("Direct evidence", "直接包含目标章节、定义或条款正文的证据；只提到参见其它制度的文本只能作为线索。 ")] }),
     microStep("Citation Merge", "按 doc_id、section_path、clause_title 合并重复来源。", { term_definitions: [term("Citation Merge", "把同一制度同一章节的多个 chunk 合并为一个可审计来源。 ")] }),
     microStep("时效性检查", "检查 publish_date、effective_date 和是否存在新旧制度冲突。", { pitfalls: ["制度问答经常错在旧政策覆盖新政策。"] }),
     microStep("引用完整性检查", "确认答案能引用具体制度、章节、来源和必要元数据。", { interview_questions: [interview("RAG 如何降低 hallucination？", "通过只基于可引用证据回答、设置相关度阈值、拒答证据不足问题，并把来源返回给用户审计。")] }),
