@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from enterprise_rag_mvp.cli import DEFAULT_DSN, DEFAULT_EMBEDDING_URL
 from enterprise_rag_mvp.embedding_client import EmbeddingClient
 from enterprise_rag_mvp.pgvector_store import PgVectorStore
+from enterprise_rag_mvp.reranker_client import RerankerClient
 from enterprise_rag_mvp.trace_pipeline import run_chat_trace
 
 
@@ -35,7 +36,9 @@ def _default_runner(query: str, top_k: int) -> dict[str, Any]:
     store = None
     if os.getenv("RAG_DISABLE_PGVECTOR", "false").lower() not in {"1", "true", "yes", "on"}:
         store = PgVectorStore(os.getenv("RAG_DATABASE_DSN", DEFAULT_DSN))
-    return run_chat_trace(query, embedding_client=embedding_client, store=store, top_k=top_k)
+    reranker_url = os.getenv("RERANKER_SERVICE_URL", "").strip()
+    reranker_client = RerankerClient(base_url=reranker_url, provider=os.getenv("RERANKER_PROVIDER", "external_cross_encoder")) if reranker_url else None
+    return run_chat_trace(query, embedding_client=embedding_client, store=store, top_k=top_k, reranker_client=reranker_client)
 
 
 def create_app(*, chat_runner: Callable[[str, int], dict[str, Any]] | None = None) -> FastAPI:

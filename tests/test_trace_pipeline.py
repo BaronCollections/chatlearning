@@ -181,6 +181,56 @@ def test_run_chat_trace_rejects_invalid_top_k():
         run_chat_trace("员工年假规则是什么？", embedding_client=FakeEmbeddingClient(), store=None, top_k=0)
 
 
+def test_run_chat_trace_can_use_external_cross_encoder_reranker():
+    class FakeStore:
+        def search(self, query_embedding, top_k):
+            return [
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="candidate-a",
+                        doc_id="doc-a",
+                        block_id="a",
+                        text="普通候选片段，语义相关但不能直接回答。",
+                        heading_path=["制度A"],
+                        metadata={"source": "sample", "title": "制度A"},
+                    ),
+                    distance=0.01,
+                ),
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="candidate-b",
+                        doc_id="doc-b",
+                        block_id="b",
+                        text="员工年假规则：员工每年可按制度申请年休假。",
+                        heading_path=["制度B"],
+                        metadata={"source": "sample", "title": "制度B"},
+                    ),
+                    distance=0.9,
+                ),
+            ]
+
+    class FakeRerankerClient:
+        provider = "fake-cross-encoder"
+
+        def rerank(self, *, query, documents):
+            assert query == "员工年假规则是什么？"
+            assert len(documents) == 2
+            return [0.0, 5.0]
+
+    response = run_chat_trace(
+        "员工年假规则是什么？",
+        embedding_client=FakeEmbeddingClient(),
+        store=FakeStore(),
+        top_k=2,
+        reranker_client=FakeRerankerClient(),
+    )
+
+    assert response["results"][0]["chunk_id"] == "candidate-b"
+    rerank = _step(response, "rerank")
+    assert rerank["details"]["reranker_source"] == "fake-cross-encoder"
+    assert rerank["details"]["rerank_comparison"][0]["reranker_score"] == 5.0
+
+
 def test_run_chat_trace_uses_pgvector_store_when_available():
     class FakeStore:
         def search(self, query_embedding: list[float], *, top_k: int):

@@ -572,10 +572,29 @@ def _filter_target_evidence(results: list[SearchResult], understanding: dict[str
     }
 
 
+def _external_reranker_scores(
+    query: str,
+    results: list[SearchResult],
+    reranker_client: Any | None,
+) -> tuple[list[float] | None, str, str | None]:
+    if reranker_client is None:
+        return None, "deterministic_fallback", None
+    provider = str(getattr(reranker_client, "provider", "external_reranker"))
+    try:
+        scores = reranker_client.rerank(query=query, documents=[result.chunk.text for result in results])
+        if len(scores) != len(results):
+            return None, f"{provider}_invalid_fallback", f"expected {len(results)} scores, got {len(scores)}"
+        return [float(score) for score in scores], provider, None
+    except Exception as exc:
+        return None, f"{provider}_failed_fallback", str(exc)
+
+
 def _rerank_results(
     query: str,
     results: list[SearchResult],
     understanding: dict[str, Any] | None = None,
+    *,
+    reranker_client: Any | None = None,
 ) -> tuple[list[SearchResult], list[dict[str, Any]]]:
     understanding = understanding or {}
     query_terms = _lexical_terms(query)
@@ -587,7 +606,8 @@ def _rerank_results(
     asked_aspect = understanding.get("asked_aspect")
     exclude_sections = [str(item) for item in understanding.get("exclude_sections") or []]
     exclude_clauses = [str(item) for item in understanding.get("exclude_clauses") or []]
-    scored: list[tuple[float, int, SearchResult, str]] = []
+    external_scores, reranker_source, reranker_error = _external_reranker_scores(query, results, reranker_client)
+    scored: list[tuple[float, float, float | None, int, SearchResult, str]] = []
     for index, result in enumerate(results, start=1):
         chunk = result.chunk
         metadata = chunk.metadata or {}
@@ -643,12 +663,16 @@ def _rerank_results(
             penalty += 0.8 * len(leaked)
             reasons.append("包含竞争章节，已降权")
         distance_score = max(0.0, 1.0 - result.distance)
-        score = round(overlap * 0.2 + heading_bonus * 0.15 + exact_bonus + distance_score - penalty, 4)
+        deterministic_score = round(overlap * 0.2 + heading_bonus * 0.15 + exact_bonus + distance_score - penalty, 4)
+        reranker_score = external_scores[index - 1] if external_scores is not None else None
+        if reranker_score is not None:
+            reasons.append(f"cross-encoder reranker_score={round(reranker_score, 4)}")
+        combined_score = round(deterministic_score + (reranker_score or 0.0), 4)
         reason = "；".join(reasons) if reasons else ("命中查询词和标题信号" if overlap or heading_bonus else "主要依赖向量距离，词项证据较弱")
-        scored.append((score, index, result, reason))
+        scored.append((combined_score, deterministic_score, reranker_score, index, result, reason))
 
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    reranked = [item[2] for item in scored]
+    scored.sort(key=lambda item: (-item[0], item[3]))
+    reranked = [item[4] for item in scored]
     comparison = [
         {
             "chunk_id": result.chunk.chunk_id,
@@ -656,6 +680,10 @@ def _rerank_results(
             "rank_before": rank_before,
             "rank_after": rank_after,
             "rerank_score": score,
+            "deterministic_score": deterministic_score,
+            "reranker_score": reranker_score,
+            "reranker_source": reranker_source,
+            "reranker_error": reranker_error,
             "distance": round(result.distance, 6),
             "reason": reason,
             "target_section": target_section,
@@ -663,7 +691,7 @@ def _rerank_results(
             "target_behavior": target_behavior,
             "asked_aspect": asked_aspect,
         }
-        for rank_after, (score, rank_before, result, reason) in enumerate(scored, start=1)
+        for rank_after, (score, deterministic_score, reranker_score, rank_before, result, reason) in enumerate(scored, start=1)
     ]
     return reranked, comparison
 
@@ -1508,6 +1536,7 @@ def run_chat_trace(
     embedding_client: Any,
     store: Any | None,
     top_k: int = 3,
+    reranker_client: Any | None = None,
 ) -> dict[str, Any]:
     if not isinstance(query, str):
         raise TypeError("query must be a string")
@@ -2078,7 +2107,7 @@ def run_chat_trace(
     )
 
     start = time.perf_counter()
-    reranked_results, rerank_comparison = _rerank_results(retrieval_query, results, understanding)
+    reranked_results, rerank_comparison = _rerank_results(retrieval_query, results, understanding, reranker_client=reranker_client)
     steps.append(
         _step(
             key="rerank",
@@ -2090,6 +2119,8 @@ def run_chat_trace(
                 "input_candidate_count": len(results),
                 "output_candidate_count": len(reranked_results),
                 "rerank_comparison": rerank_comparison,
+                "reranker_source": rerank_comparison[0].get("reranker_source") if rerank_comparison else "none",
+                "reranker_error": rerank_comparison[0].get("reranker_error") if rerank_comparison else None,
                 "term_definitions": [
                     _term("Rerank", "对已召回候选重新排序，让真正回答问题的证据排到前面。"),
                     _term("Cross-encoder", "同时读取 query 和 document 的模型，直接输出相关性分数。"),

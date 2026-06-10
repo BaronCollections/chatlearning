@@ -100,7 +100,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 - BGE-M3：当前示例推荐的 embedding 模型，适合中文、英文和中英混排，也适合本地部署。
 - pgvector：PostgreSQL 的向量扩展，用熟悉的数据库系统承载向量检索。
 - Hybrid Search：混合检索，把 dense vector 的语义相似度与关键词/精确匹配一起用，适合制度条款这类既要语义又要字面准确的场景。
-- Rerank：对初始召回结果重新排序，减少“向量相似但业务不相关”的候选进入答案。
+- Rerank：对初始召回结果重新排序，减少“向量相似但业务不相关”的候选进入答案。默认使用可解释的确定性 fallback；配置 `RERANKER_SERVICE_URL` 后可接入 bge-reranker-v2-m3 等 cross-encoder 服务，形成“规则硬约束 + reranker 软排序”。
 - Span Extraction：在命中的 chunk 内继续抽取目标段落，例如只截取 `4. 弄虚作假行为` 到下一个同级标题之前。
 - Scope Guard：范围护栏，检查答案证据是否混入用户没有问的相邻章节，例如问“二类违规”时不能带出“三类违规”。
 - Direct evidence：直接证据，指文本本身包含目标章节、定义、行为规则或条款正文；只写“参见某制度”的片段不算直接证据。
@@ -119,6 +119,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 │   ├── embedding_client.py             # embedding 服务客户端
 │   ├── models.py                       # PolicyChunk / SearchResult 数据模型
 │   ├── pgvector_store.py               # pgvector 写入与检索
+│   ├── reranker_client.py              # 可选 cross-encoder reranker HTTP 客户端
 │   ├── policy_rule_resolver.py         # 规则型查询解析：事实 -> 条件 -> 结论
 │   ├── regression_cases.py             # 制度问答回归评测样本
 │   ├── samples.py                      # 可公开的样例制度 chunk
@@ -201,6 +202,17 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 .venv/bin/python -m enterprise_rag_mvp.cli search '员工年假规则是什么？' --top-k 3
 ```
 
+可选接入 reranker 服务时，服务需要支持：
+
+```http
+POST /rerank
+Content-Type: application/json
+
+{"query":"用户问题","documents":["候选片段1","候选片段2"]}
+```
+
+返回可以是 `{"scores":[0.1,0.9]}`，也可以是 `{"results":[{"index":1,"score":0.9},{"index":0,"score":0.1}]}`。如果服务超时、返回数量不一致或未配置，系统会降级到确定性 fallback，并在 rerank trace 里记录 `reranker_source` 和 `reranker_error`。
+
 启动 Web 服务：
 
 ```bash
@@ -216,6 +228,8 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 | `EMBEDDING_SERVICE_URL` | `http://127.0.0.1:8001` | embedding 服务地址 |
 | `RAG_DATABASE_DSN` | `postgresql://127.0.0.1:5432/enterprise_rag_mvp` | PostgreSQL 连接串 |
 | `RAG_DISABLE_PGVECTOR` | `false` | 设置为 `true` 时跳过 pgvector，使用内存样例模式 |
+| `RERANKER_SERVICE_URL` | 空 | 可选 cross-encoder reranker 服务地址，接口为 `POST /rerank` |
+| `RERANKER_PROVIDER` | `external_cross_encoder` | trace 中展示的 reranker 名称，例如 `bge-reranker-v2-m3` |
 
 不要把 `.env`、cookie、session、数据库密码或真实源文档提交到仓库；GitHub 发布只同步代码、公开样例、测试和说明文档。
 
