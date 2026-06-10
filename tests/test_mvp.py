@@ -88,3 +88,13 @@ def test_schema_path_points_to_existing_pgvector_schema():
 
     assert path.name == "001_pgvector_schema.sql"
     assert path.exists()
+
+
+def test_sample_policy_chunks_cover_absenteeism_rule_demo():
+    texts = "\n".join(chunk.text for chunk in sample_policy_chunks())
+
+    assert "连续旷工3个工作日以下" in texts
+    assert "扣除旷工期间工资" in texts
+    assert "记过处分" in texts
+    assert "4.2旷工少于三天" in texts
+    assert "二类违规行为" in texts

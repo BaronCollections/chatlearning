@@ -831,3 +831,32 @@ def test_every_trace_step_exposes_data_flow_input_and_output():
     assert _step(response, "request_intake")["details"]["data_flow"]["input"]["raw_message"] == "员工年假规则是什么？"
     assert _step(response, "normalize_text")["details"]["data_flow"]["output"]["normalized_query"] == "员工年假规则是什么？"
     assert _step(response, "retrieval_plan")["details"]["data_flow"]["output"]["enabled_channels"] == ["dense_vector"]
+
+
+def test_in_memory_demo_answers_absenteeism_duration_query():
+    response = run_chat_trace(
+        "我旷工两天会有什么事儿",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=3,
+    )
+
+    assert "事实：旷工 2 天" in response["answer"]
+    assert "规则匹配：2 < 3" in response["answer"]
+    assert "连续旷工3个工作日以下" in response["answer"]
+    assert "扣除旷工期间工资" in response["answer"]
+    assert "给予记过处分" in response["answer"]
+    assert "属于二类违规行为" in response["answer"]
+
+
+def test_in_memory_demo_handles_absenteeism_penalty_typo_query():
+    response = run_chat_trace(
+        "我旷工两天会有有什么处罚",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=3,
+    )
+
+    assert "事实：旷工 2 天" in response["answer"]
+    assert "扣除旷工期间工资" in response["answer"]
+    assert "给予记过处分" in response["answer"]

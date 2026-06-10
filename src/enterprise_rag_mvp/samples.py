@@ -20,6 +20,30 @@ def sample_policy_chunks() -> list[PolicyChunk]:
             metadata={"source": "考勤管理制度.md", "page": 5, "policy_type": "attendance"},
         ),
         PolicyChunk(
+            chunk_id="attendance-absence-penalty-001",
+            doc_id="worktime-leave-policy",
+            block_id="absenteeism-penalty",
+            text=(
+                "（三）旷工 凡符合以下情况之一的应视为旷工。"
+                "连续旷工3个工作日以下的，扣除旷工期间工资，并给予记过处分；"
+                "连续旷工3个工作日及以上的，或一年内累计两次及以上旷工的，扣除旷工期间工资，并给予辞退处分。"
+            ),
+            heading_path=["云谷人守则-工作时间及假期管理制度", "旷工处理"],
+            metadata={"source": "工作时间及假期管理制度.md", "page": 11, "policy_type": "attendance"},
+        ),
+        PolicyChunk(
+            chunk_id="discipline-absence-classification-001",
+            doc_id="employee-discipline-policy",
+            block_id="class-2-management-order",
+            text=(
+                "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、"
+                "破坏学校管理秩序等致使学校经济、形象、声誉遭受严重损害的行为。"
+                "4. 破坏学校管理秩序行为 4.1渎职给学校造成较大损失。4.2旷工少于三天。"
+            ),
+            heading_path=["云谷人守则-员工纪律制度", "二类违规行为", "破坏学校管理秩序行为"],
+            metadata={"source": "员工纪律制度.md", "page": 16, "policy_type": "conduct"},
+        ),
+        PolicyChunk(
             chunk_id="expense-travel-001",
             doc_id="expense-policy",
             block_id="article-8",
