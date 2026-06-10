@@ -51,13 +51,29 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 例如用户问“员工年假规则是什么”，真实业务里可能同时命中年休假制度、假勤补充说明、审批流程和适用对象条款。这个不是前端随便拼出来的，控制点在后端：
 
 1. 请求参数 `top_k` 控制最终返回多少条证据。
-2. `PgVectorStore.search()` 负责从 pgvector 中按向量距离取候选。
-3. `trace_pipeline.py` 的 rerank 逻辑负责把候选重新排序，减少语义相近但业务不相关的片段。
-4. `trace_pipeline.py` 的 citation 序列化负责把每条结果变成 `[1]`、`[2]` 这样的引用，并带上标题、分类、发布时间、chunk_id、source 和可点击链接。
-5. 前端只渲染后端返回的 `results[].citation`，不会自己猜链接或伪造来源。
+2. `PgVectorStore.search()` 负责普通语义问题的 pgvector 向量召回。
+3. `PgVectorStore.hybrid_search()` 负责精确制度问题的混合召回，同时看向量相似度、关键词、标题路径和 metadata。
+4. `trace_pipeline.py` 的 query understanding 判断问题是普通规则查询，还是“二类违规”“弄虚作假行为”这类精确条款查询。
+5. `trace_pipeline.py` 的 scope-aware rerank 会给目标章节/条款加权，并对竞争章节降权，例如问“二类违规”时降低“三类违规”的得分。
+6. `trace_pipeline.py` 的 citation 序列化负责把每条结果变成 `[1]`、`[2]` 这样的引用，并带上标题、分类、发布时间、chunk_id、source 和可点击链接。
+7. 前端只渲染后端返回的 `results[].citation`，不会自己猜链接或伪造来源。
 
 云谷制度来源会根据 `import_information_id` 生成 `https://work.yungu.org/policyDetail/{id}` 形式的详情链接；普通样例或文件来源如果没有真实 URL，就只展示 source/page/chunk metadata。这样可以同时满足学习展示、审计追溯和真实业务回答的可信度要求。
 
+## 精确条款问答如何避免串段
+
+这次重点修复的是“问二类违规，却把三类违规也答出来”这类真实业务问题。它不是单一 bug，而是从导入、检索、重排、上下文组装到引用展示的链路问题：
+
+1. 结构化切块：`yungu_importer.py` 不再只按固定长度切文本，会优先识别制度里的同级标题和条款组。例如 `4. 弄虚作假行为` 会和 `4.1` 到 `4.4` 放在同一个 `clause_group` chunk 里，并在 metadata 中记录 `section_title`、`clause_no`、`clause_range`、`section_path`。
+2. 精确意图识别：`trace_pipeline.py` 会识别 `二类违规`、`三类违规`、`弄虚作假行为`、`4.1` 这类查询，标记为 `exact_policy_lookup`。这类问题不能只靠 embedding 相似度。
+3. Hybrid Search：精确查询会启用 `exact_match + sparse_keyword + dense_vector`。字面命中保证条款名不丢，向量召回保证用户表达不完全一致时还能召回。
+4. Scope-aware Rerank：重排阶段会把目标章节、目标条款和目标子条款作为强特征；相邻但不属于目标的问题会被降权。Rerank 是业务可选增强，但在制度问答里很推荐。
+5. Span Extraction：如果历史数据里仍然存在粗 chunk，系统会在命中的 chunk 内二次截取目标范围。例如从 `（二）二类违规行为` 截到 `（三）三类违规行为` 之前，或从 `4. 弄虚作假行为` 截到 `5. 破坏学校管理秩序行为` 之前。
+6. Scope Guard：证据质量检查会记录是否成功收窄范围，并检查结果里是否混入竞争章节。这个检查用于调试和教学，也用于后续接入 LLM 前的安全闸。
+7. Citation Merge：如果同一篇制度的多个相邻 chunk 都命中，展示层会按文档、章节和范围合并引用，避免重复来源刷屏。
+8. 可追溯链接：云谷制度链接使用真实详情地址 `https://work.yungu.org/policyDetail/{importInformationId}`，不会生成未验证的前端路由。
+
+是否每一步都必须做：结构化切块、来源 metadata、引用链接是制度问答的基础；Hybrid Search、Rerank、Scope Guard 属于真实业务强烈建议项；Langfuse 观测、离线评测、权限过滤、附件解析会随着生产化程度逐步补齐。
 
 ## 学习颗粒度
 
@@ -77,7 +93,11 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 - Embedding：把文本语义映射成向量，用于相似度检索。
 - BGE-M3：当前示例推荐的 embedding 模型，适合中文、英文和中英混排，也适合本地部署。
 - pgvector：PostgreSQL 的向量扩展，用熟悉的数据库系统承载向量检索。
+- Hybrid Search：混合检索，把 dense vector 的语义相似度与关键词/精确匹配一起用，适合制度条款这类既要语义又要字面准确的场景。
 - Rerank：对初始召回结果重新排序，减少“向量相似但业务不相关”的候选进入答案。
+- Span Extraction：在命中的 chunk 内继续抽取目标段落，例如只截取 `4. 弄虚作假行为` 到下一个同级标题之前。
+- Scope Guard：范围护栏，检查答案证据是否混入用户没有问的相邻章节，例如问“二类违规”时不能带出“三类违规”。
+- Citation Merge：引用合并，把同一篇制度、同一章节的多个相邻 chunk 合并展示，避免 `[1]`、`[2]`、`[3]` 全是同一个来源。
 - Langfuse：RAG/Agent 观测平台，可记录 trace、span、输入输出、耗时、评分和回放。
 
 ## 项目结构
@@ -91,6 +111,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 │   ├── models.py                       # PolicyChunk / SearchResult 数据模型
 │   ├── pgvector_store.py               # pgvector 写入与检索
 │   ├── samples.py                      # 可公开的样例制度 chunk
+│   ├── yungu_importer.py               # 云谷制度分页、详情、HTML 清洗和结构化切块
 │   ├── trace_pipeline.py               # 后端 RAG trace 主流程
 │   ├── web_app.py                      # FastAPI Web 服务
 │   └── web/                            # 原生 JS/CSS 前端
@@ -182,11 +203,11 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 1. 从业务系统分页拉取文档列表，只保存必要的文档 ID、标题、分类、发布时间和权限字段。
 2. 逐篇拉取详情正文，不要把 cookie、session 或内部接口地址写死在代码里。
 3. 清洗 HTML、PDF 或 Word 内容，保留标题层级、表格文本、附件信息和来源信息。
-4. 按语义边界切 chunk，例如按章节、标题、条款和最大 token 数切分。
-5. 为每个 chunk 写入 metadata，例如 `source`、`category`、`audience`、`publish_date`、`effective_date`、`permission_scope`。
+4. 按语义边界切 chunk，优先使用章节/条款/条款组；没有结构时才回退到最大 token 或固定窗口。
+5. 为每个 chunk 写入 metadata，例如 `source`、`category`、`audience`、`publish_date`、`effective_date`、`permission_scope`、`section_title`、`clause_no`、`clause_range`、`source_url`。
 6. 调用 embedding 服务把 chunk 文本转成 document embedding。
 7. 调用 `PgVectorStore.upsert_chunks(chunks, embeddings)` 写入数据库。
-8. 用真实问题回放 trace，检查召回、rerank、证据质量和答案观测。
+8. 用真实问题回放 trace，检查 query understanding、Hybrid Search、rerank、Scope Guard、Citation Merge 和答案观测。
 
 最小自定义导入示例：
 
@@ -286,9 +307,11 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 
 按分类导入完成后，命令会输出分类级报告：分类数量、每个分类的接口 total、读取页数、处理文档数、导入/跳过数量、chunk 数，以及每篇制度的 `importInformationId`、标题、状态和 chunk 数。报告不会打印制度正文。
 
-导入器会写入这些 metadata：`source`、`import_information_id`、`title`、`publish_date`、`policy_category_type`、`policy_category_type_name`、`policy_system_type`、`create_user_name`、`file_count`。
+导入器会写入这些 metadata：`source`、`import_information_id`、`title`、`publish_date`、`policy_category_type`、`policy_category_type_name`、`policy_system_type`、`create_user_name`、`file_count`、`source_url`、`chunk_type`、`section_title`、`clause_title`、`clause_no`、`clause_range`、`section_path`。
 
 真实检索结果的来源控制依赖这些 metadata。回答阶段会把 `import_information_id`、标题、分类和发布时间序列化为 citation；前端展示 citation 链接，但不负责决定哪条制度应该进入答案。
+
+已有历史数据如果是在旧切块策略下导入的，建议重新执行导入，让数据库里产生新的 `section_overview` 和 `clause_group` chunk。即使暂时不重导，回答阶段的 Span Extraction 也会尽量从粗 chunk 中截取目标章节，但结构化重导的准确性更高。
 
 ## 隐私与发布边界
 

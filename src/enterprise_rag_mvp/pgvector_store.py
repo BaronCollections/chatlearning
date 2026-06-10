@@ -11,6 +11,27 @@ def build_vector_literal(vector: Sequence[float]) -> str:
     return "[" + ",".join(str(float(value)) for value in vector) + "]"
 
 
+def _hybrid_terms(query_text: str, metadata_filters: dict | None) -> list[str]:
+    terms: list[str] = []
+    metadata_filters = metadata_filters or {}
+    for key in ["target_terms", "target_section", "target_clause", "target_subclause"]:
+        value = metadata_filters.get(key)
+        if isinstance(value, list):
+            terms.extend(str(item) for item in value if item)
+        elif value:
+            terms.append(str(value))
+    for token in query_text.replace("？", " ").replace("?", " ").split():
+        token = token.strip()
+        if len(token) >= 2:
+            terms.append(token)
+    deduped: list[str] = []
+    for term in terms:
+        term = term.strip()
+        if term and term not in deduped:
+            deduped.append(term)
+    return deduped
+
+
 class PgVectorStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -59,6 +80,110 @@ class PgVectorStore:
                     """,
                     (chunk.chunk_id, build_vector_literal(embedding), "mvp-local-bge-m3"),
                 )
+
+    def hybrid_search(
+        self,
+        *,
+        query_text: str,
+        query_embedding: list[float],
+        top_k: int,
+        metadata_filters: dict | None = None,
+    ) -> list[SearchResult]:
+        terms = _hybrid_terms(query_text, metadata_filters)
+        if not terms:
+            return self.search(query_embedding, top_k=top_k)
+
+        patterns = [f"%{term}%" for term in terms]
+        vector = build_vector_literal(query_embedding)
+        keyword_limit = max(top_k * 4, top_k)
+        dense_limit = max(top_k * 2, top_k)
+        with psycopg.connect(self._dsn) as conn:
+            rows = conn.execute(
+                """
+                WITH dense AS (
+                  SELECT
+                    c.chunk_id,
+                    c.doc_id,
+                    c.block_id,
+                    c.chunk_text,
+                    c.heading_path,
+                    c.metadata::text,
+                    e.embedding <=> %s::vector AS distance,
+                    0.0 AS keyword_score
+                  FROM rag_chunk_embeddings_bge_m3 e
+                  JOIN rag_chunks c ON c.chunk_id = e.chunk_id
+                  ORDER BY e.embedding <=> %s::vector
+                  LIMIT %s
+                ),
+                keyword AS (
+                  SELECT
+                    c.chunk_id,
+                    c.doc_id,
+                    c.block_id,
+                    c.chunk_text,
+                    c.heading_path,
+                    c.metadata::text,
+                    e.embedding <=> %s::vector AS distance,
+                    (
+                      CASE WHEN c.chunk_text ILIKE ANY(%s::text[]) THEN 2.0 ELSE 0.0 END +
+                      CASE WHEN array_to_string(c.heading_path, ' ') ILIKE ANY(%s::text[]) THEN 3.0 ELSE 0.0 END +
+                      CASE WHEN c.metadata::text ILIKE ANY(%s::text[]) THEN 2.5 ELSE 0.0 END
+                    ) AS keyword_score
+                  FROM rag_chunk_embeddings_bge_m3 e
+                  JOIN rag_chunks c ON c.chunk_id = e.chunk_id
+                  WHERE c.chunk_text ILIKE ANY(%s::text[])
+                     OR array_to_string(c.heading_path, ' ') ILIKE ANY(%s::text[])
+                     OR c.metadata::text ILIKE ANY(%s::text[])
+                  ORDER BY keyword_score DESC, e.embedding <=> %s::vector
+                  LIMIT %s
+                ),
+                unioned AS (
+                  SELECT * FROM dense
+                  UNION ALL
+                  SELECT * FROM keyword
+                ),
+                deduped AS (
+                  SELECT DISTINCT ON (chunk_id) *
+                  FROM unioned
+                  ORDER BY chunk_id, keyword_score DESC, distance ASC
+                )
+                SELECT chunk_id, doc_id, block_id, chunk_text, heading_path, metadata, distance, keyword_score
+                FROM deduped
+                ORDER BY keyword_score DESC, distance ASC
+                LIMIT %s
+                """,
+                (
+                    vector,
+                    vector,
+                    dense_limit,
+                    vector,
+                    patterns,
+                    patterns,
+                    patterns,
+                    patterns,
+                    patterns,
+                    patterns,
+                    vector,
+                    keyword_limit,
+                    top_k,
+                ),
+            ).fetchall()
+
+        results: list[SearchResult] = []
+        for row in rows:
+            metadata = json.loads(row[5] or "{}")
+            metadata["hybrid_keyword_score"] = float(row[7] or 0.0)
+            chunk = PolicyChunk(
+                chunk_id=row[0],
+                doc_id=row[1],
+                block_id=row[2],
+                text=row[3],
+                heading_path=list(row[4] or []),
+                metadata=metadata,
+            )
+            results.append(SearchResult(chunk=chunk, distance=float(row[6])))
+        return results
+
 
     def search(self, query_embedding: list[float], *, top_k: int) -> list[SearchResult]:
         with psycopg.connect(self._dsn) as conn:

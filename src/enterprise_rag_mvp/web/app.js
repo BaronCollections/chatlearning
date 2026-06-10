@@ -637,13 +637,15 @@ const ragInnerStepCatalog = {
   ],
   retrieval_plan: [
     microStep("确定 top_k", "设置召回候选数量，平衡召回率、rerank 成本和上下文长度。", { interview_questions: [interview("top_k 过大或过小分别有什么问题？", "过小会漏召回，过大会增加 rerank 和上下文成本，还可能把噪声证据带入答案。")] }),
-    microStep("生成过滤条件", "根据分类、权限、时间和对象范围生成 metadata filter。", { pitfalls: ["没有权限过滤的企业 RAG 不能上线。"] }),
-    microStep("选择检索策略", "决定使用 dense、sparse、hybrid 或 metadata-first 检索。", { term_definitions: [term("Hybrid search", "结合向量语义召回和关键词/稀疏召回的检索方式。 ")] }),
+    microStep("识别精确制度查询", "把二类违规、4.1、弄虚作假行为识别为 exact policy lookup。", { term_definitions: [term("Exact match", "对制度标题、条款号、章节名做确定性匹配，适合精确制度查询。 ")] }),
+    microStep("生成过滤条件", "根据分类、权限、时间、目标章节和排除章节生成 metadata filter。", { pitfalls: ["没有权限过滤和章节约束的企业 RAG 不能上线。"] }),
+    microStep("选择 Hybrid Search", "决定 dense vector、sparse keyword、exact match 是否并行召回。", { term_definitions: [term("Hybrid Search", "结合向量语义召回、关键词召回和精确匹配的检索方式。 ")] }),
   ],
   initial_retrieval: [
+    microStep("执行 Hybrid Search", "精确制度查询同时走 exact match、sparse keyword 和 pgvector dense 召回。", { term_definitions: [term("Sparse keyword", "保留关键词和条款号信号，适合二类违规、4.1 这类精确词。 ")] }),
     microStep("执行向量检索", "用 pgvector/HNSW/余弦距离找语义相近 chunk。", { term_definitions: [term("HNSW", "常见近似最近邻向量索引结构。 ")] }),
-    microStep("读取 chunk 元数据", "带回标题层级、source、category、publish_date、permission_scope 等字段。", { quality_checks: [{ name: "source_metadata", status: "ok", reason: "没有来源字段就无法引用和审计。" }] }),
-    microStep("候选去重", "按 doc_id、heading_path 或 chunk_id 去掉重复候选。", { pitfalls: ["重复 chunk 会挤掉真正有用的证据。"] }),
+    microStep("读取 chunk 元数据", "带回标题层级、source、category、publish_date、section_path、clause_title 等字段。", { quality_checks: [{ name: "source_metadata", status: "ok", reason: "没有来源字段和章节字段就无法引用和审计。" }] }),
+    microStep("候选去重", "按 doc_id、section_path、clause_title 或 chunk_id 去掉重复候选。", { pitfalls: ["重复 chunk 会挤掉真正有用的证据。"] }),
   ],
   rerank: [
     microStep("构造 query-document pair", "把用户问题和候选 chunk 组成重排输入。", { term_definitions: [term("Cross-encoder", "同时读取 query 和文档并输出相关性分数的模型。 ")] }),
@@ -652,6 +654,9 @@ const ragInnerStepCatalog = {
   ],
   evidence_quality: [
     microStep("相关度阈值", "低于阈值时不强答，改为提示证据不足或反问。", { quality_checks: [{ name: "relevance_threshold", status: "ok", reason: "证据不足时强答会制造幻觉。" }] }),
+    microStep("章节边界截取", "从粗 chunk 中按 start_marker/end_marker 抽取目标章节，避免带出相邻条款。", { term_definitions: [term("Span extraction", "从较长文本中截取真正回答当前问题的片段。 ")] }),
+    microStep("Scope Guard", "检查答案和 context 是否泄露了一类/三类违规等竞争章节。", { quality_checks: [{ name: "scope_guard", status: "ok", reason: "精确查询只能回答用户询问的章节。" }] }),
+    microStep("Citation Merge", "按 doc_id、section_path、clause_title 合并重复来源。", { term_definitions: [term("Citation Merge", "把同一制度同一章节的多个 chunk 合并为一个可审计来源。 ")] }),
     microStep("时效性检查", "检查 publish_date、effective_date 和是否存在新旧制度冲突。", { pitfalls: ["制度问答经常错在旧政策覆盖新政策。"] }),
     microStep("引用完整性检查", "确认答案能引用具体制度、章节、来源和必要元数据。", { interview_questions: [interview("RAG 如何降低 hallucination？", "通过只基于可引用证据回答、设置相关度阈值、拒答证据不足问题，并把来源返回给用户审计。")] }),
   ],

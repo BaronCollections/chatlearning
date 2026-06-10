@@ -70,6 +70,51 @@ def test_detail_to_policy_chunks_maps_metadata_and_skips_empty_body():
     assert detail_to_policy_chunks({"importInformationId": 1, "cnTitle": "空", "body": "<p> </p>"}) == []
 
 
+def test_detail_to_policy_chunks_splits_violation_clause_groups():
+    body = """
+    <p>（二）二类违规行为</p>
+    <p>二类违规行为：指违反师德师风、学校保密义务、破坏学校管理秩序等致使学校经济、形象、声誉遭受严重损害的行为，是比较严重的违规行为。</p>
+    <p>3. 侵犯学校权益行为</p>
+    <p>3.1未经学校授权发言，造成不良影响。</p>
+    <p>4. 弄虚作假行为</p>
+    <p>4.1向学校隐瞒或有意提交虚假的重大信息。</p>
+    <p>4.2 在老师个人及学生各级考试各类评选活动中弄虚作假，营私舞弊并造成严重恶劣影响。</p>
+    <p>4.3虚假报销，例如报销未发生的费用或以虚假理由报销费用等。</p>
+    <p>4.4 其他弄虚作假给学校造成严重不良影响或经济、声誉损失的行为。</p>
+    <p>5. 破坏学校管理秩序行为</p>
+    <p>5.1旷工少于三天。</p>
+    <p>（三）三类违规行为</p>
+    <p>三类违规行为：指一般的违规行为。</p>
+    """
+    chunks = detail_to_policy_chunks(
+        {
+            "importInformationId": 16,
+            "cnTitle": "云谷人守则-员工纪律制度",
+            "policyCategoryTypeName": "云谷人守则",
+            "body": body,
+        }
+    )
+
+    clause_chunk = next(chunk for chunk in chunks if chunk.metadata.get("clause_title") == "4. 弄虚作假行为")
+
+    assert clause_chunk.metadata["chunk_type"] == "clause_group"
+    assert clause_chunk.metadata["section_title"] == "二类违规行为"
+    assert clause_chunk.metadata["clause_no"] == "4"
+    assert clause_chunk.metadata["clause_range"] == "4.1-4.4"
+    assert clause_chunk.metadata["section_path"] == ["二类违规行为", "4. 弄虚作假行为"]
+    assert clause_chunk.metadata["source_url"] == "https://work.yungu.org/policyDetail/16"
+    assert "4.1向学校隐瞒" in clause_chunk.text
+    assert "4.4 其他弄虚作假" in clause_chunk.text
+    assert "3. 侵犯学校权益行为" not in clause_chunk.text
+    assert "5. 破坏学校管理秩序行为" not in clause_chunk.text
+
+    section_chunk = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "section_overview")
+    assert section_chunk.metadata["section_title"] == "二类违规行为"
+    assert "二类违规行为：指违反师德师风" in section_chunk.text
+    assert "4. 弄虚作假行为" in section_chunk.text
+    assert "（三）三类违规行为" not in section_chunk.text
+
+
 def test_yungu_policy_client_fetches_list_and_detail_and_rejects_login_failure():
     requests = []
 

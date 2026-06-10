@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import math
+import re
 import hashlib
 import time
 from typing import Any
 from urllib.parse import quote
 
-from enterprise_rag_mvp.models import SearchResult
+from enterprise_rag_mvp.models import PolicyChunk, SearchResult
 from enterprise_rag_mvp.samples import sample_policy_chunks
 
 PGVECTOR_QUERY_SQL = """
@@ -235,16 +236,71 @@ def _reranker_choice() -> dict[str, Any]:
     }
 
 
+def _policy_lookup_spec(query: str) -> dict[str, Any]:
+    spec: dict[str, Any] = {
+        "retrieval_intent": "semantic_policy_lookup",
+        "target_terms": [],
+        "target_section": None,
+        "target_clause": None,
+        "target_clause_no": None,
+        "target_subclause": None,
+        "exclude_sections": [],
+        "exclude_clauses": [],
+    }
+
+    def set_exact(*terms: str) -> None:
+        spec["retrieval_intent"] = "exact_policy_lookup"
+        for term in terms:
+            if term and term not in spec["target_terms"]:
+                spec["target_terms"].append(term)
+
+    if "一类违规" in query:
+        set_exact("一类违规", "一类违规行为")
+        spec["target_section"] = "一类违规行为"
+        spec["exclude_sections"] = ["二类违规行为", "三类违规行为"]
+    if "二类违规" in query:
+        set_exact("二类违规", "二类违规行为")
+        spec["target_section"] = "二类违规行为"
+        spec["exclude_sections"] = ["一类违规行为", "三类违规行为"]
+    if "三类违规" in query:
+        set_exact("三类违规", "三类违规行为")
+        spec["target_section"] = "三类违规行为"
+        spec["exclude_sections"] = ["一类违规行为", "二类违规行为"]
+
+    if any(term in query for term in ["弄虚作假", "虚假报销"]):
+        set_exact("弄虚作假", "弄虚作假行为", "虚假报销")
+        spec["target_section"] = spec.get("target_section") or "二类违规行为"
+        spec["target_clause"] = "4. 弄虚作假行为"
+        spec["target_clause_no"] = "4"
+        spec["exclude_sections"] = sorted(set([*spec.get("exclude_sections", []), "一类违规行为", "三类违规行为"]))
+        spec["exclude_clauses"] = ["3. 侵犯学校权益行为", "5. 破坏学校管理秩序行为"]
+        if "虚假报销" in query:
+            spec["target_subclause"] = "4.3"
+
+    subclause_match = re.search(r"(?<!\d)(\d{1,2}\.\d+)(?!\d)", query)
+    if subclause_match:
+        subclause = subclause_match.group(1)
+        set_exact(subclause)
+        spec["target_subclause"] = subclause
+        spec["target_clause_no"] = subclause.split(".")[0]
+    return spec
+
+
 def _detect_query_understanding(query: str) -> dict[str, Any]:
     policy_category_hint = "general"
-    if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤"]):
-        policy_category_hint = "leave" if any(term in query for term in ["年假", "年休假"]) else "hr"
+    if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假"]):
+        if any(term in query for term in ["年假", "年休假"]):
+            policy_category_hint = "leave"
+        elif any(term in query for term in ["违规", "弄虚作假"]):
+            policy_category_hint = "conduct"
+        else:
+            policy_category_hint = "hr"
     elif any(term in query for term in ["报销", "采购", "发票", "财务"]):
         policy_category_hint = "finance"
     elif any(term in query for term in ["安全", "账号", "数据", "外传"]):
         policy_category_hint = "security"
 
-    audience_hint = "employee" if any(term in query for term in ["员工", "老师", "教师", "HR"]) else "unknown"
+    audience_hint = "employee" if any(term in query for term in ["员工", "老师", "教师", "HR", "违规", "弄虚作假"]) else "unknown"
     if any(term in query for term in ["学生", "幼儿园", "小学", "初中", "高中"]):
         audience_hint = "student_or_stage_specific"
 
@@ -256,36 +312,50 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
     elif any(term in query for term in ["区别", "对比", "比较"]):
         intent = "policy_comparison"
 
+    policy_lookup = _policy_lookup_spec(query)
+    if policy_lookup["retrieval_intent"] == "exact_policy_lookup":
+        intent = "policy_definition_lookup"
+
     ambiguity_flags: list[str] = []
     if audience_hint == "unknown":
         ambiguity_flags.append("missing_audience")
     if any(term in query for term in ["今年", "最新", "现在"]) and not any(char.isdigit() for char in query):
         ambiguity_flags.append("relative_time_without_year")
 
+    extracted_terms = [term for term in ["员工", "年假", "年休假", "报销", "考勤", "安全", "违规", "二类违规", "弄虚作假", "虚假报销"] if term in query]
     return {
         "intent": intent,
         "policy_category_hint": policy_category_hint,
         "audience_hint": audience_hint,
         "time_hints": [term for term in ["今年", "最新", "现在", "2026"] if term in query],
         "ambiguity_flags": ambiguity_flags,
-        "extracted_terms": [term for term in ["员工", "年假", "年休假", "报销", "考勤", "安全"] if term in query],
+        "extracted_terms": extracted_terms,
+        **policy_lookup,
     }
 
 
 def _rewrite_query(query: str, understanding: dict[str, Any]) -> dict[str, Any]:
     standalone_query = query
-    if understanding.get("audience_hint") == "employee" and "员工" not in standalone_query:
-        standalone_query = f"员工{standalone_query}"
-    if understanding.get("policy_category_hint") == "leave" and "规则" not in standalone_query:
-        standalone_query = f"{standalone_query} 规则"
+    if understanding.get("retrieval_intent") != "exact_policy_lookup":
+        if understanding.get("audience_hint") == "employee" and "员工" not in standalone_query:
+            standalone_query = f"员工{standalone_query}"
+        if understanding.get("policy_category_hint") == "leave" and "规则" not in standalone_query:
+            standalone_query = f"{standalone_query} 规则"
 
     expansions: list[str] = []
-    if "年假" in standalone_query and "年休假" not in standalone_query:
-        expansions.append("年休假")
-    if "年休假" in standalone_query and "年假" not in standalone_query:
-        expansions.append("年假")
-    if understanding.get("policy_category_hint") == "leave":
-        expansions.extend(["带薪年休假", "休假管理办法"])
+    if understanding.get("retrieval_intent") == "exact_policy_lookup":
+        expansions.extend(understanding.get("target_terms") or [])
+        if understanding.get("target_section"):
+            expansions.append(understanding["target_section"])
+        if understanding.get("target_clause"):
+            expansions.append(understanding["target_clause"])
+    else:
+        if "年假" in standalone_query and "年休假" not in standalone_query:
+            expansions.append("年休假")
+        if "年休假" in standalone_query and "年假" not in standalone_query:
+            expansions.append("年假")
+        if understanding.get("policy_category_hint") == "leave":
+            expansions.extend(["带薪年休假", "休假管理办法"])
 
     deduped_expansions = []
     for term in expansions:
@@ -300,7 +370,7 @@ def _rewrite_query(query: str, understanding: dict[str, Any]) -> dict[str, Any]:
         "semantic_drift_check": {
             "status": "ok",
             "method": "rule-based scope comparison",
-            "reason": "只补充同义词和制度检索词，没有改变用户的对象、动作或问题类型。",
+            "reason": "精确制度查询只补充同一目标章节/条款词；普通查询只补充同义词和制度检索词，没有改变用户的对象、动作或问题类型。",
         },
     }
 
@@ -313,17 +383,59 @@ def _lexical_terms(text: str) -> set[str]:
     return terms
 
 
-def _rerank_results(query: str, results: list[SearchResult]) -> tuple[list[SearchResult], list[dict[str, Any]]]:
+def _metadata_text(chunk: Any) -> str:
+    metadata = chunk.metadata or {}
+    values = []
+    for value in metadata.values():
+        if isinstance(value, list):
+            values.extend(str(item) for item in value)
+        else:
+            values.append(str(value))
+    return " ".join(values)
+
+
+def _rerank_results(
+    query: str,
+    results: list[SearchResult],
+    understanding: dict[str, Any] | None = None,
+) -> tuple[list[SearchResult], list[dict[str, Any]]]:
+    understanding = understanding or {}
     query_terms = _lexical_terms(query)
+    target_terms = [str(term) for term in understanding.get("target_terms") or []]
+    target_section = understanding.get("target_section")
+    target_clause = understanding.get("target_clause")
+    exclude_sections = [str(item) for item in understanding.get("exclude_sections") or []]
+    exclude_clauses = [str(item) for item in understanding.get("exclude_clauses") or []]
     scored: list[tuple[float, int, SearchResult, str]] = []
     for index, result in enumerate(results, start=1):
         chunk = result.chunk
-        haystack = " ".join([chunk.text, " ".join(chunk.heading_path), " ".join(str(v) for v in chunk.metadata.values())])
+        metadata = chunk.metadata or {}
+        haystack = " ".join([chunk.text, " ".join(chunk.heading_path), _metadata_text(chunk)])
         overlap = len(query_terms.intersection(_lexical_terms(haystack)))
         heading_bonus = 2 if any(term in "".join(chunk.heading_path) for term in ["年假", "年休假", "休假"]) else 0
+        exact_bonus = 0.0
+        reasons: list[str] = []
+        for term in target_terms:
+            if term and term in haystack:
+                exact_bonus += 1.0
+        if exact_bonus:
+            reasons.append("命中精确制度词")
+        section_path = metadata.get("section_path") or []
+        if target_section and (metadata.get("section_title") == target_section or target_section in section_path or target_section in "".join(chunk.heading_path)):
+            exact_bonus += 3.0
+            reasons.append("命中目标章节")
+        if target_clause and (metadata.get("clause_title") == target_clause or target_clause in section_path or target_clause in chunk.text):
+            exact_bonus += 4.0
+            reasons.append("命中目标条款组")
+
+        penalty = 0.0
+        leaked = [item for item in [*exclude_sections, *exclude_clauses] if item and item in haystack]
+        if leaked:
+            penalty += 0.8 * len(leaked)
+            reasons.append("包含竞争章节，已降权")
         distance_score = max(0.0, 1.0 - result.distance)
-        score = round(overlap * 0.2 + heading_bonus * 0.15 + distance_score, 4)
-        reason = "命中查询词和标题信号" if overlap or heading_bonus else "主要依赖向量距离，词项证据较弱"
+        score = round(overlap * 0.2 + heading_bonus * 0.15 + exact_bonus + distance_score - penalty, 4)
+        reason = "；".join(reasons) if reasons else ("命中查询词和标题信号" if overlap or heading_bonus else "主要依赖向量距离，词项证据较弱")
         scored.append((score, index, result, reason))
 
     scored.sort(key=lambda item: (-item[0], item[1]))
@@ -337,6 +449,8 @@ def _rerank_results(query: str, results: list[SearchResult]) -> tuple[list[Searc
             "rerank_score": score,
             "distance": round(result.distance, 6),
             "reason": reason,
+            "target_section": target_section,
+            "target_clause": target_clause,
         }
         for rank_after, (score, rank_before, result, reason) in enumerate(scored, start=1)
     ]
@@ -396,8 +510,155 @@ def _citation_for_result(result: SearchResult, index: int) -> dict[str, Any]:
     }
 
 
-def _quality_checks(results: list[SearchResult], rerank_comparison: list[dict[str, Any]]) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+
+def _marker_variants(marker: str | None) -> list[str]:
+    if not marker:
+        return []
+    variants = [marker]
+    variants.append(marker.replace(". ", "."))
+    variants.append(marker.replace(".", ". ", 1) if "." in marker else marker)
+    return list(dict.fromkeys(variants))
+
+
+def _find_first_marker(text: str, markers: list[str], *, start: int = 0) -> tuple[int, str | None]:
+    matches = [(text.find(marker, start), marker) for marker in markers if marker]
+    matches = [(index, marker) for index, marker in matches if index >= 0]
+    if not matches:
+        return -1, None
+    return min(matches, key=lambda item: item[0])
+
+
+def _next_clause_marker(clause_no: str | None) -> str | None:
+    if not clause_no:
+        return None
+    try:
+        return f"{int(clause_no) + 1}."
+    except ValueError:
+        return None
+
+
+def _extract_scoped_text(text: str, understanding: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    target_clause = understanding.get("target_clause")
+    target_section = understanding.get("target_section")
+    exclude_sections = [str(item) for item in understanding.get("exclude_sections") or []]
+    exclude_clauses = [str(item) for item in understanding.get("exclude_clauses") or []]
+    scope = {
+        "applied": False,
+        "target_section": target_section,
+        "target_clause": target_clause,
+        "start_marker": None,
+        "end_marker": None,
+        "excluded_markers": [*exclude_sections, *exclude_clauses],
+    }
+    if not text or understanding.get("retrieval_intent") != "exact_policy_lookup":
+        return text, scope
+
+    if target_clause:
+        start_markers = _marker_variants(str(target_clause))
+        start_index, start_marker = _find_first_marker(text, start_markers)
+        if start_index < 0:
+            return text, scope
+        next_clause = _next_clause_marker(understanding.get("target_clause_no"))
+        end_markers = [*exclude_clauses]
+        if next_clause:
+            end_markers.extend([next_clause, f" {next_clause}"])
+        end_index, end_marker = _find_first_marker(text, end_markers, start=start_index + len(start_marker or ""))
+    elif target_section:
+        start_markers = [f"（二）{target_section}", f"（一）{target_section}", f"（三）{target_section}", f"{target_section}：", str(target_section)]
+        start_index, start_marker = _find_first_marker(text, start_markers)
+        if start_index < 0:
+            return text, scope
+        end_markers = []
+        for section in exclude_sections:
+            end_markers.extend([f"（一）{section}", f"（二）{section}", f"（三）{section}", str(section)])
+        end_index, end_marker = _find_first_marker(text, end_markers, start=start_index + len(start_marker or ""))
+    else:
+        return text, scope
+
+    if end_index < 0:
+        end_index = len(text)
+    scoped = text[start_index:end_index].strip()
+    if not scoped:
+        return text, scope
+    scope.update({"applied": True, "start_marker": start_marker, "end_marker": end_marker})
+    return scoped, scope
+
+
+def _scope_result(result: SearchResult, understanding: dict[str, Any]) -> SearchResult:
+    scoped_text, scope = _extract_scoped_text(result.chunk.text, understanding)
+    if not scope["applied"]:
+        return result
+    metadata = {**(result.chunk.metadata or {}), "scope": scope, "scoped_text_applied": True}
+    chunk = PolicyChunk(
+        chunk_id=result.chunk.chunk_id,
+        doc_id=result.chunk.doc_id,
+        block_id=result.chunk.block_id,
+        text=scoped_text,
+        heading_path=result.chunk.heading_path,
+        metadata=metadata,
+    )
+    return SearchResult(chunk=chunk, distance=result.distance)
+
+
+def _scope_results(results: list[SearchResult], understanding: dict[str, Any]) -> list[SearchResult]:
+    return [_scope_result(result, understanding) for result in results]
+
+
+def _evidence_key(result: SearchResult, understanding: dict[str, Any]) -> tuple[Any, ...]:
+    metadata = result.chunk.metadata or {}
+    doc_id = result.chunk.doc_id
+    if understanding.get("target_clause"):
+        return (doc_id, metadata.get("section_title") or understanding.get("target_section"), metadata.get("clause_title") or understanding.get("target_clause"))
+    if understanding.get("target_section"):
+        return (doc_id, metadata.get("section_title") or understanding.get("target_section"))
+    section_path = metadata.get("section_path")
+    if section_path:
+        return (doc_id, tuple(section_path))
+    return (doc_id, result.chunk.block_id or result.chunk.chunk_id)
+
+
+def _dedupe_evidence(results: list[SearchResult], understanding: dict[str, Any]) -> tuple[list[SearchResult], dict[str, Any]]:
+    seen: set[tuple[Any, ...]] = set()
+    deduped: list[SearchResult] = []
+    duplicate_chunk_ids: list[str] = []
+    for result in results:
+        key = _evidence_key(result, understanding)
+        if key in seen:
+            duplicate_chunk_ids.append(result.chunk.chunk_id)
+            continue
+        seen.add(key)
+        deduped.append(result)
+    return deduped, {
+        "input_count": len(results),
+        "output_count": len(deduped),
+        "removed_duplicates": len(duplicate_chunk_ids),
+        "duplicate_chunk_ids": duplicate_chunk_ids,
+    }
+
+
+def _scope_guard(texts: list[str], understanding: dict[str, Any]) -> dict[str, Any]:
+    forbidden = [str(item) for item in [*(understanding.get("exclude_sections") or []), *(understanding.get("exclude_clauses") or [])] if item]
+    joined = " ".join(texts)
+    leaked = [marker for marker in forbidden if marker in joined]
+    return {
+        "status": "ok" if not leaked else "warn",
+        "forbidden_markers": forbidden,
+        "leaked_markers": leaked,
+        "reason": "答案和上下文没有包含竞争章节。" if not leaked else "检测到用户未询问的相邻章节，需要截断或重写。",
+    }
+
+
+def _quality_checks(
+    results: list[SearchResult],
+    rerank_comparison: list[dict[str, Any]],
+    *,
+    understanding: dict[str, Any] | None = None,
+    citation_merge: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], dict[str, Any]]:
+    understanding = understanding or {}
+    citation_merge = citation_merge or {"removed_duplicates": 0}
     top_score = rerank_comparison[0]["rerank_score"] if rerank_comparison else 0
+    guard = _scope_guard([result.chunk.text for result in results], understanding)
     checks = [
         {
             "name": "relevance_threshold",
@@ -419,11 +680,22 @@ def _quality_checks(results: list[SearchResult], rerank_comparison: list[dict[st
             "status": "ok" if results else "warn",
             "reason": f"组装 {len(results)} 个 context block，并保留标题、来源、页码和引用链接。",
         },
+        {
+            "name": "scope_guard",
+            "status": guard["status"],
+            "reason": guard["reason"],
+        },
+        {
+            "name": "citation_merge",
+            "status": "ok",
+            "reason": f"合并重复来源 {citation_merge.get('removed_duplicates', 0)} 条。",
+        },
     ]
     context_blocks = []
     for index, result in enumerate(results, start=1):
         chunk = result.chunk
         citation = _citation_for_result(result, index)
+        scope = chunk.metadata.get("scope") if isinstance(chunk.metadata, dict) else None
         context_blocks.append(
             {
                 "chunk_id": chunk.chunk_id,
@@ -432,9 +704,10 @@ def _quality_checks(results: list[SearchResult], rerank_comparison: list[dict[st
                 "source": chunk.metadata.get("source", chunk.doc_id),
                 "page": chunk.metadata.get("page"),
                 "citation": citation,
+                "scope": scope or {"applied": False},
             }
         )
-    return checks, context_blocks
+    return checks, context_blocks, guard
 
 
 def _langfuse_observations(trace_id: str, retrieval_mode: str, result_count: int) -> list[dict[str, Any]]:
@@ -497,7 +770,12 @@ def _compose_answer(results: list[SearchResult], retrieval_mode: str) -> str:
 
     best = results[0].chunk
     best_citation = _citation_for_result(results[0], 1)
-    mode_label = "pgvector" if retrieval_mode == "pgvector" else "内存向量检索 demo"
+    mode_labels = {
+        "pgvector_hybrid": "pgvector hybrid",
+        "pgvector": "pgvector",
+        "in_memory_demo": "内存向量检索 demo",
+    }
+    mode_label = mode_labels.get(retrieval_mode, retrieval_mode)
     source_lines = []
     for index, result in enumerate(results, start=1):
         citation = _citation_for_result(result, index)
@@ -899,10 +1177,21 @@ def run_chat_trace(
 
     start = time.perf_counter()
     candidate_limit = max(top_k, min(10, top_k * 4))
+    enabled_channels = ["dense_vector"]
+    if understanding.get("retrieval_intent") == "exact_policy_lookup":
+        enabled_channels = ["exact_match", "sparse_keyword", "dense_vector"]
     metadata_filters = {
         "policy_category_hint": understanding["policy_category_hint"],
         "audience_hint": understanding["audience_hint"],
         "time_hints": understanding["time_hints"],
+        "retrieval_intent": understanding.get("retrieval_intent"),
+        "target_terms": understanding.get("target_terms"),
+        "target_section": understanding.get("target_section"),
+        "target_clause": understanding.get("target_clause"),
+        "target_clause_no": understanding.get("target_clause_no"),
+        "target_subclause": understanding.get("target_subclause"),
+        "exclude_sections": understanding.get("exclude_sections"),
+        "exclude_clauses": understanding.get("exclude_clauses"),
     }
     steps.append(
         _step(
@@ -911,35 +1200,48 @@ def run_chat_trace(
             summary="决定召回通道、metadata filter、候选数量和最终 top_k。",
             details={
                 "tool": "retrieval planner rules",
-                "enabled_channels": ["dense_vector"],
+                "enabled_channels": enabled_channels,
                 "production_options": ["BM25", "hybrid_search", "metadata_filter"],
                 "candidate_limit": candidate_limit,
                 "final_top_k": top_k,
                 "metadata_filters": metadata_filters,
                 "expanded_query_for_future_hybrid": rewrite["expanded_query"],
-                "why": "真实 RAG 通常先多召回，再 rerank 到少量证据；不能直接把 top_k 当作唯一候选数。",
-                "tradeoff": "当前代码只启用 dense vector，BM25/hybrid/filter 以计划字段呈现，后续可插拔实现。",
+                "why": "精确制度词必须启用 exact/sparse 信号；普通语义问题可以先用 dense vector，再由 rerank 压噪。",
+                "tradeoff": "hybrid search 比纯向量更适合条款编号和制度标题，但需要更好的索引和 metadata。",
                 "term_definitions": [
+                    _term("Exact match", "对制度标题、条款号、章节名做确定性匹配，适合二类违规、4.1 这类精确查询。"),
                     _term("BM25", "搜索引擎常用的关键词排序算法，适合制度编号、专有名词和精确词。"),
                     _term("Hybrid search", "把向量语义检索和关键词检索合并，兼顾语义召回和精确匹配。"),
                     _term("Metadata filter", "用分类、适用对象、发布时间等结构化字段限制检索范围。"),
                 ],
-                "pitfalls": ["candidate_limit 太小会让 rerank 没有发挥空间；太大又会增加延迟。"],
+                "pitfalls": ["candidate_limit 太小会让 rerank 没有发挥空间；太大又会增加延迟。", "精确条款查询不能只靠 embedding。"],
             },
             duration_ms=_duration_ms(start),
             execution_mode="parallel",
             children=[
                 _step(
+                    key="detect_exact_policy_lookup",
+                    title="识别精确制度查询",
+                    summary="判断是否需要 exact/sparse/dense 三路召回。",
+                    details={
+                        "retrieval_intent": understanding.get("retrieval_intent"),
+                        "target_terms": understanding.get("target_terms"),
+                        "target_section": understanding.get("target_section"),
+                        "target_clause": understanding.get("target_clause"),
+                    },
+                    duration_ms=0,
+                ),
+                _step(
                     key="choose_channels",
                     title="选择召回通道",
-                    summary="当前启用 dense vector，记录 BM25/hybrid 作为生产扩展点。",
-                    details={"enabled_channels": ["dense_vector"], "production_options": ["BM25", "hybrid_search"]},
+                    summary="精确制度查询启用 exact/sparse/dense；普通查询使用 dense。",
+                    details={"enabled_channels": enabled_channels, "production_options": ["BM25", "hybrid_search"]},
                     duration_ms=0,
                 ),
                 _step(
                     key="derive_metadata_filters",
                     title="派生 metadata filters",
-                    summary="从查询理解结果派生分类、对象和时间过滤线索。",
+                    summary="从查询理解结果派生分类、对象、章节和排除范围。",
                     details=metadata_filters,
                     duration_ms=0,
                 ),
@@ -955,11 +1257,13 @@ def run_chat_trace(
     )
 
     start = time.perf_counter()
-    retrieval_mode = "pgvector"
+    retrieval_mode = "pgvector_hybrid" if "exact_match" in enabled_channels else "pgvector"
     vector_details: dict[str, Any] = {
-        "framework": "PostgreSQL + pgvector",
+        "framework": "PostgreSQL + pgvector hybrid" if retrieval_mode == "pgvector_hybrid" else "PostgreSQL + pgvector",
         "sql": PGVECTOR_QUERY_SQL,
         "top_k": candidate_limit,
+        "enabled_channels": enabled_channels,
+        "metadata_filters": metadata_filters,
         "tool_choice": _vector_store_choice(),
         "term_definitions": [
             _term("Chunk", "从源文档切出来的可检索文本块。"),
@@ -970,16 +1274,17 @@ def run_chat_trace(
     }
     build_query_start = time.perf_counter()
     build_query_details = {
-        "tool": "PostgreSQL SQL + pgvector <=> operator",
+        "tool": "PostgreSQL hybrid search" if retrieval_mode == "pgvector_hybrid" else "PostgreSQL SQL + pgvector <=> operator",
         "sql": PGVECTOR_QUERY_SQL,
         "top_k": candidate_limit,
         "distance_metric": "cosine distance，值越小越相似。",
+        "enabled_channels": enabled_channels,
     }
     vector_children = [
         _step(
             key="build_vector_query",
-            title="构造向量查询",
-            summary="准备 pgvector cosine distance 查询和 TopK 参数。",
+            title="构造检索查询",
+            summary="准备 dense vector 查询；精确制度查询额外带 exact/sparse 过滤信号。",
             details=build_query_details,
             duration_ms=_duration_ms(build_query_start),
         )
@@ -988,15 +1293,30 @@ def run_chat_trace(
         if store is None:
             raise RuntimeError("No pgvector store configured for this request.")
         pgvector_start = time.perf_counter()
-        results = store.search(query_embedding, top_k=candidate_limit)
+        if retrieval_mode == "pgvector_hybrid" and hasattr(store, "hybrid_search"):
+            results = store.hybrid_search(
+                query_text=rewrite["expanded_query"],
+                query_embedding=query_embedding,
+                top_k=candidate_limit,
+                metadata_filters=metadata_filters,
+            )
+            search_tool = "PgVectorStore.hybrid_search"
+            search_key = "hybrid_search"
+            search_title = "执行 Hybrid Search"
+        else:
+            results = store.search(query_embedding, top_k=candidate_limit)
+            search_tool = "PgVectorStore.search"
+            search_key = "pgvector_search"
+            search_title = "执行 pgvector 检索"
         pgvector_duration = _duration_ms(pgvector_start)
         vector_children.append(
             _step(
-                key="pgvector_search",
-                title="执行 pgvector 检索",
-                summary="在已入库 chunk embedding 中按向量距离取 TopK。",
+                key=search_key,
+                title=search_title,
+                summary="按检索计划召回候选 chunk。",
                 details={
-                    "tool": "PgVectorStore.search",
+                    "tool": search_tool,
+                    "enabled_channels": enabled_channels,
                     "result_count": len(results),
                     "results_preview": [_serialize_result(result, index) for index, result in enumerate(results, start=1)],
                 },
@@ -1009,15 +1329,15 @@ def run_chat_trace(
             {
                 "framework": "Python in-memory cosine fallback",
                 "pgvector_error": str(exc),
-                "fallback_reason": "pgvector is unavailable or not configured; running demo retrieval over sample chunks.",
+                "fallback_reason": "pgvector/hybrid search is unavailable or not configured; running demo retrieval over sample chunks.",
             }
         )
         vector_children.append(
             _step(
                 key="pgvector_search",
-                title="执行 pgvector 检索",
+                title="执行 pgvector / hybrid 检索",
                 summary="pgvector 不可用，进入 fallback 分支。",
-                details={"tool": "PgVectorStore.search", "error": str(exc)},
+                details={"tool": "PgVectorStore.search or hybrid_search", "error": str(exc)},
                 duration_ms=_duration_ms(start),
                 status="error",
             )
@@ -1046,7 +1366,7 @@ def run_chat_trace(
         _step(
             key="initial_retrieval",
             title="Step 9 · 初召回",
-            summary="优先走 pgvector cosine distance；不可用时走内存 demo 检索，并输出候选 chunk。",
+            summary="按检索计划执行 dense 或 hybrid 召回，并输出候选 chunk。",
             details=vector_details,
             duration_ms=_duration_ms(start),
             execution_mode="branch",
@@ -1055,14 +1375,14 @@ def run_chat_trace(
     )
 
     start = time.perf_counter()
-    reranked_results, rerank_comparison = _rerank_results(retrieval_query, results)
+    reranked_results, rerank_comparison = _rerank_results(retrieval_query, results, understanding)
     steps.append(
         _step(
             key="rerank",
             title="Step 10 · Rerank 重排",
             summary="对初召回候选重新打分，展示排序前后的变化。",
             details={
-                "tool": "deterministic lexical rerank fallback",
+                "tool": "deterministic lexical + scope-aware rerank fallback",
                 "reranker_choice": _reranker_choice(),
                 "input_candidate_count": len(results),
                 "output_candidate_count": len(reranked_results),
@@ -1072,7 +1392,7 @@ def run_chat_trace(
                     _term("Cross-encoder", "同时读取 query 和 document 的模型，直接输出相关性分数。"),
                     _term("Relevance score", "候选 chunk 与问题相关程度的分数。"),
                 ],
-                "pitfalls": ["Rerank 会增加延迟；只应该重排候选集，不应该重排全库。"],
+                "pitfalls": ["Rerank 会增加延迟；只应该重排候选集，不应该重排全库。", "精确条款查询需要给目标章节加分，并给相邻竞争章节降权。"],
             },
             duration_ms=_duration_ms(start),
             execution_mode="sequential",
@@ -1088,7 +1408,7 @@ def run_chat_trace(
                     key="score_candidates",
                     title="候选打分",
                     summary="用本地确定性 fallback 计算 rerank_score。",
-                    details={"tool": "lexical overlap + heading bonus + vector distance"},
+                    details={"tool": "lexical overlap + heading bonus + exact section/clause bonus + competing section penalty + vector distance"},
                     duration_ms=0,
                 ),
                 _step(
@@ -1102,9 +1422,16 @@ def run_chat_trace(
         )
     )
 
-    final_results = reranked_results[:top_k]
+    scoped_results = _scope_results(reranked_results, understanding)
+    deduped_results, citation_merge = _dedupe_evidence(scoped_results, understanding)
+    final_results = deduped_results[:top_k]
     quality_start = time.perf_counter()
-    quality_checks, context_blocks = _quality_checks(final_results, rerank_comparison)
+    quality_checks, context_blocks, scope_guard = _quality_checks(
+        final_results,
+        rerank_comparison,
+        understanding=understanding,
+        citation_merge=citation_merge,
+    )
     steps.append(
         _step(
             key="evidence_quality",
@@ -1114,6 +1441,8 @@ def run_chat_trace(
                 "tool": "deterministic evidence quality checks",
                 "quality_checks": quality_checks,
                 "context_blocks": context_blocks,
+                "scope_guard": scope_guard,
+                "citation_merge": citation_merge,
                 "term_definitions": [
                     _term("Faithfulness", "回答中的结论是否能被检索证据支持。"),
                     _term("Citation", "让用户能追溯到来源文档、标题、页码或 chunk 的引用信息。"),
@@ -1150,6 +1479,21 @@ def run_chat_trace(
                     status=quality_checks[2]["status"],
                 ),
                 _step(
+                    key="extract_scoped_context",
+                    title="章节边界截取",
+                    summary="按目标章节/条款从粗 chunk 中截取相关 span，避免带出相邻章节。",
+                    details={"context_blocks": context_blocks, "scope_guard": scope_guard},
+                    duration_ms=0,
+                    status=scope_guard["status"],
+                ),
+                _step(
+                    key="merge_duplicate_citations",
+                    title="合并重复来源",
+                    summary="按 doc + section + clause 合并重复候选，避免同一制度重复展示多次。",
+                    details=citation_merge,
+                    duration_ms=0,
+                ),
+                _step(
                     key="assemble_context",
                     title="组装上下文",
                     summary="把最终证据整理成带引用的 context block。",
@@ -1173,8 +1517,9 @@ def run_chat_trace(
                 "template": "top reranked result + source + retrieval mode",
                 "answer": answer,
                 "post_answer_faithfulness_check": {
-                    "status": "ok" if final_results else "warn",
-                    "reason": "当前回答模板只引用最终证据；接入 LLM 后需要逐句检查引用覆盖。",
+                    "status": "ok" if final_results and scope_guard["status"] == "ok" else "warn",
+                    "reason": "当前回答模板只引用最终证据；接入 LLM 后需要逐句检查引用覆盖和章节越界。",
+                    "scope_guard": scope_guard,
                 },
                 "langfuse_observations": observations,
                 "why_not_full_llm_now": "当前版本先把真实 RAG 诊断链路和可观测字段跑通；LLM 生成要在引用、权限和评估闭环后接入。",
@@ -1199,7 +1544,7 @@ def run_chat_trace(
                     key="post_answer_faithfulness_check",
                     title="回答后校验",
                     summary="确认回答能追溯到当前证据。",
-                    details={"status": "ok" if final_results else "warn"},
+                    details={"status": "ok" if final_results and scope_guard["status"] == "ok" else "warn", "scope_guard": scope_guard},
                     duration_ms=0,
                     status="ok" if final_results else "warn",
                 ),

@@ -38,3 +38,14 @@ CREATE TABLE IF NOT EXISTS rag_chunk_embeddings_qwen3_06b (
 CREATE INDEX IF NOT EXISTS rag_qwen3_06b_embedding_hnsw_idx
 ON rag_chunk_embeddings_qwen3_06b
 USING hnsw (embedding vector_cosine_ops);
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS rag_chunks_metadata_gin_idx
+ON rag_chunks USING gin (metadata);
+
+CREATE INDEX IF NOT EXISTS rag_chunks_text_trgm_idx
+ON rag_chunks USING gin (chunk_text gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS rag_chunks_heading_trgm_idx
+ON rag_chunks USING gin ((array_to_string(heading_path, ' ')) gin_trgm_ops);

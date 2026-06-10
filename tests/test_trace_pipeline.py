@@ -132,7 +132,7 @@ def test_run_chat_trace_explains_query_rewrite_rerank_quality_and_observability(
     assert "dense_vector" in retrieval_plan["details"]["enabled_channels"]
 
     rerank = _step(response, "rerank")
-    assert rerank["details"]["tool"] == "deterministic lexical rerank fallback"
+    assert rerank["details"]["tool"] == "deterministic lexical + scope-aware rerank fallback"
     assert rerank["details"]["rerank_comparison"]
     assert {"rank_before", "rank_after", "rerank_score", "reason"}.issubset(
         rerank["details"]["rerank_comparison"][0]
@@ -240,3 +240,97 @@ def test_run_chat_trace_returns_policy_citations_with_links_for_multiple_hits():
     first_block = evidence["details"]["context_blocks"][0]
     assert first_block["citation"]["url"] == citations[0]["url"]
     assert first_block["citation"]["import_information_id"] == 2374
+
+
+def _discipline_chunk(*, chunk_id="discipline-rough-1", text=None, metadata=None):
+    rough_text = text or (
+        "3. 侵犯学校权益行为 3.1未经学校授权发言，造成不良影响。 "
+        "4. 弄虚作假行为 4.1向学校隐瞒或有意提交虚假的重大信息。 "
+        "4.2 在老师个人及学生各级考试各类评选活动中弄虚作假，营私舞弊并造成严重恶劣影响。 "
+        "4.3虚假报销，例如报销未发生的费用或以虚假理由报销费用等。 "
+        "4.4 其他弄虚作假给学校造成严重不良影响或经济、声誉损失的行为。 "
+        "5. 破坏学校管理秩序行为 5.1旷工少于三天。"
+    )
+    base_metadata = {
+        "source": "yungu_policy_system",
+        "import_information_id": 16,
+        "title": "云谷人守则-员工纪律制度",
+        "policy_category_type_name": "云谷人守则",
+        "section_title": "二类违规行为",
+        "source_url": "https://work.yungu.org/policyDetail/16",
+    }
+    if metadata:
+        base_metadata.update(metadata)
+    return PolicyChunk(
+        chunk_id=chunk_id,
+        doc_id="yungu-policy-16",
+        block_id=chunk_id,
+        text=rough_text,
+        heading_path=["云谷人守则", "云谷人守则-员工纪律制度"],
+        metadata=base_metadata,
+    )
+
+
+def test_exact_clause_query_uses_hybrid_search_and_scopes_answer_to_clause_group():
+    class HybridStore:
+        def __init__(self):
+            self.calls = []
+
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            self.calls.append({"query_text": query_text, "metadata_filters": metadata_filters, "top_k": top_k})
+            return [SearchResult(chunk=_discipline_chunk(), distance=0.2)]
+
+    store = HybridStore()
+    response = run_chat_trace(
+        "弄虚作假行为是什么？",
+        embedding_client=FakeEmbeddingClient(),
+        store=store,
+        top_k=3,
+    )
+
+    assert store.calls
+    assert store.calls[0]["metadata_filters"]["retrieval_intent"] == "exact_policy_lookup"
+    assert "exact_match" in _step(response, "retrieval_plan")["details"]["enabled_channels"]
+    assert "sparse_keyword" in _step(response, "retrieval_plan")["details"]["enabled_channels"]
+    assert "4.1向学校隐瞒" in response["answer"]
+    assert "4.4 其他弄虚作假" in response["answer"]
+    assert "3. 侵犯学校权益行为" not in response["answer"]
+    assert "5. 破坏学校管理秩序行为" not in response["answer"]
+    assert "检索方式：pgvector hybrid" in response["answer"]
+    assert "内存向量检索 demo" not in response["answer"]
+    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
+
+    evidence = _step(response, "evidence_quality")
+    assert evidence["details"]["scope_guard"]["status"] == "ok"
+    assert evidence["details"]["context_blocks"][0]["scope"]["applied"] is True
+
+
+def test_exact_section_query_deduplicates_sources_and_excludes_competing_sections():
+    section_text = (
+        "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、破坏学校管理秩序等致使学校经济、形象、声誉遭受严重损害的行为，是比较严重的违规行为。 "
+        "1.师德师风相关的违规行为 2. 违反保密义务行为 3. 侵犯学校权益行为 4. 弄虚作假行为 5. 破坏学校管理秩序行为 "
+        "（三）三类违规行为 三类违规行为：指一般的违规行为。"
+    )
+
+    class DuplicateStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            return [
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-a", text=section_text), distance=0.1),
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-b", text=section_text), distance=0.11),
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-c", text=section_text), distance=0.12),
+            ]
+
+    response = run_chat_trace(
+        "二类违规是什么",
+        embedding_client=FakeEmbeddingClient(),
+        store=DuplicateStore(),
+        top_k=3,
+    )
+
+    assert "二类违规行为：指违反师德师风" in response["answer"]
+    assert "（三）三类违规行为" not in response["answer"]
+    assert "三类违规行为：指一般" not in response["answer"]
+    assert len(response["results"]) == 1
+    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
+    evidence = _step(response, "evidence_quality")
+    assert evidence["details"]["citation_merge"]["removed_duplicates"] == 2
