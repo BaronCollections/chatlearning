@@ -236,6 +236,56 @@ def _reranker_choice() -> dict[str, Any]:
     }
 
 
+DISCIPLINARY_ACTION_ASPECT = "disciplinary_action"
+DISCIPLINARY_ACTION_QUERY_TERMS = [
+    "处罚",
+    "处分",
+    "处理",
+    "处理方式",
+    "怎么处理",
+    "如何处理",
+    "纪律处分",
+    "违规处理",
+    "惩罚",
+    "后果",
+    "警告",
+    "记过",
+    "降级",
+    "辞退",
+    "解除劳动合同",
+    "绩效",
+    "薪酬影响",
+]
+DISCIPLINARY_ACTION_RETRIEVAL_TERMS = [
+    "处罚",
+    "处分",
+    "处理",
+    "违规处理",
+    "处分流程",
+    "处理方式",
+    "纪律处分",
+    "警告",
+    "记过",
+    "降级",
+    "辞退",
+    "解除劳动合同",
+    "绩效考核",
+    "薪酬影响",
+    "最终处理决定",
+    "申诉",
+]
+
+
+def _has_disciplinary_action_intent(query: str) -> bool:
+    return any(term in query for term in DISCIPLINARY_ACTION_QUERY_TERMS)
+
+
+def _aspect_terms(aspect: str | None) -> list[str]:
+    if aspect == DISCIPLINARY_ACTION_ASPECT:
+        return DISCIPLINARY_ACTION_RETRIEVAL_TERMS
+    return []
+
+
 def _policy_lookup_spec(query: str) -> dict[str, Any]:
     spec: dict[str, Any] = {
         "retrieval_intent": "semantic_policy_lookup",
@@ -244,6 +294,7 @@ def _policy_lookup_spec(query: str) -> dict[str, Any]:
         "target_clause": None,
         "target_clause_no": None,
         "target_subclause": None,
+        "asked_aspect": None,
         "exclude_sections": [],
         "exclude_clauses": [],
     }
@@ -276,6 +327,10 @@ def _policy_lookup_spec(query: str) -> dict[str, Any]:
         spec["exclude_clauses"] = ["3. 侵犯学校权益行为", "5. 破坏学校管理秩序行为"]
         if "虚假报销" in query:
             spec["target_subclause"] = "4.3"
+
+    if _has_disciplinary_action_intent(query):
+        spec["asked_aspect"] = DISCIPLINARY_ACTION_ASPECT
+        set_exact(*DISCIPLINARY_ACTION_RETRIEVAL_TERMS)
 
     subclause_match = re.search(r"(?<!\d)(\d{1,2}\.\d+)(?!\d)", query)
     if subclause_match:
@@ -314,7 +369,7 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
 
     policy_lookup = _policy_lookup_spec(query)
     if policy_lookup["retrieval_intent"] == "exact_policy_lookup":
-        intent = "policy_definition_lookup"
+        intent = "policy_disciplinary_action_lookup" if policy_lookup.get("asked_aspect") == DISCIPLINARY_ACTION_ASPECT else "policy_definition_lookup"
 
     ambiguity_flags: list[str] = []
     if audience_hint == "unknown":
@@ -322,7 +377,25 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
     if any(term in query for term in ["今年", "最新", "现在"]) and not any(char.isdigit() for char in query):
         ambiguity_flags.append("relative_time_without_year")
 
-    extracted_terms = [term for term in ["员工", "年假", "年休假", "报销", "考勤", "安全", "违规", "二类违规", "弄虚作假", "虚假报销"] if term in query]
+    extracted_terms = [
+        term
+        for term in [
+            "员工",
+            "年假",
+            "年休假",
+            "报销",
+            "考勤",
+            "安全",
+            "违规",
+            "二类违规",
+            "弄虚作假",
+            "虚假报销",
+            "处罚",
+            "处分",
+            "处理",
+        ]
+        if term in query
+    ]
     return {
         "intent": intent,
         "policy_category_hint": policy_category_hint,
@@ -330,6 +403,7 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
         "time_hints": [term for term in ["今年", "最新", "现在", "2026"] if term in query],
         "ambiguity_flags": ambiguity_flags,
         "extracted_terms": extracted_terms,
+        "aspect_terms": _aspect_terms(policy_lookup.get("asked_aspect")),
         **policy_lookup,
     }
 
@@ -448,6 +522,37 @@ def _has_target_metadata_scope(metadata: dict[str, Any], understanding: dict[str
     return False
 
 
+def _target_marker_variants(understanding: dict[str, Any]) -> list[str]:
+    markers: list[str] = []
+    target_section = understanding.get("target_section")
+    if target_section:
+        section = str(target_section)
+        markers.append(section)
+        if section.endswith("行为"):
+            markers.append(section.removesuffix("行为"))
+    target_clause = understanding.get("target_clause")
+    if target_clause:
+        markers.append(str(target_clause))
+    target_subclause = understanding.get("target_subclause")
+    if target_subclause:
+        markers.append(str(target_subclause))
+    if "二类违规" in markers or understanding.get("target_section") == "二类违规行为":
+        markers.extend(["二类、三类违规", "一类及二类违规", "二类及三类违规"])
+    if "一类违规" in markers or understanding.get("target_section") == "一类违规行为":
+        markers.extend(["一类及二类违规", "一类违规行为"])
+    if "三类违规" in markers or understanding.get("target_section") == "三类违规行为":
+        markers.extend(["二类、三类违规", "二类及三类违规", "三类违规行为"])
+    return list(dict.fromkeys(marker for marker in markers if marker))
+
+
+def _has_target_marker(text: str, understanding: dict[str, Any]) -> bool:
+    return any(marker in text for marker in _target_marker_variants(understanding))
+
+
+def _has_aspect_signal(text: str, understanding: dict[str, Any]) -> bool:
+    return any(term in text for term in _aspect_terms(understanding.get("asked_aspect")))
+
+
 def _is_direct_target_evidence(result: SearchResult, understanding: dict[str, Any]) -> bool:
     if understanding.get("retrieval_intent") != "exact_policy_lookup":
         return True
@@ -455,6 +560,8 @@ def _is_direct_target_evidence(result: SearchResult, understanding: dict[str, An
     metadata = result.chunk.metadata or {}
     if _is_reference_only_text(text, understanding):
         return False
+    if understanding.get("asked_aspect") == DISCIPLINARY_ACTION_ASPECT:
+        return _has_target_marker(text, understanding) and _has_aspect_signal(text, understanding)
     target_clause = understanding.get("target_clause")
     target_subclause = understanding.get("target_subclause")
     target_section = understanding.get("target_section")
@@ -502,6 +609,7 @@ def _rerank_results(
     target_terms = [str(term) for term in understanding.get("target_terms") or []]
     target_section = understanding.get("target_section")
     target_clause = understanding.get("target_clause")
+    asked_aspect = understanding.get("asked_aspect")
     exclude_sections = [str(item) for item in understanding.get("exclude_sections") or []]
     exclude_clauses = [str(item) for item in understanding.get("exclude_clauses") or []]
     scored: list[tuple[float, int, SearchResult, str]] = []
@@ -528,6 +636,12 @@ def _rerank_results(
         if target_clause and (metadata.get("clause_title") == target_clause or target_clause in section_path or target_clause in chunk.text):
             exact_bonus += 4.0
             reasons.append("命中目标条款组")
+        if asked_aspect and _has_target_marker(haystack, understanding):
+            exact_bonus += 2.0
+            reasons.append("命中目标对象")
+        if asked_aspect and _has_aspect_signal(haystack, understanding):
+            exact_bonus += 5.0
+            reasons.append("命中问题面")
 
         penalty = 0.0
         if understanding.get("retrieval_intent") == "exact_policy_lookup" and target_section:
@@ -537,6 +651,9 @@ def _rerank_results(
             if _is_reference_only_text(chunk.text, understanding):
                 penalty += 6.0
                 reasons.append("仅为参见型片段，不能作为最终证据")
+        if asked_aspect and not _has_aspect_signal(haystack, understanding):
+            penalty += 5.0
+            reasons.append("缺少问题面证据，已降权")
         leaked = [item for item in [*exclude_sections, *exclude_clauses] if item and item in haystack]
         if leaked:
             penalty += 0.8 * len(leaked)
@@ -559,6 +676,7 @@ def _rerank_results(
             "reason": reason,
             "target_section": target_section,
             "target_clause": target_clause,
+            "asked_aspect": asked_aspect,
         }
         for rank_after, (score, rank_before, result, reason) in enumerate(scored, start=1)
     ]
@@ -645,6 +763,21 @@ def _next_clause_marker(clause_no: str | None) -> str | None:
         return None
 
 
+def _trim_end_marker_prefix(text: str, end_index: int) -> tuple[int, str | None]:
+    if end_index <= 0:
+        return end_index, None
+    prefix = text[max(0, end_index - 16):end_index]
+    numbered = re.search(r"(?:^|\s)(\d{1,2}(?:\.\d+)*\s*)$", prefix)
+    if numbered:
+        marker_prefix = numbered.group(1)
+        return end_index - len(marker_prefix), marker_prefix.strip()
+    bracketed = re.search(r"([（(][一二三四五六七八九十]+[）)]\s*)$", prefix)
+    if bracketed:
+        marker_prefix = bracketed.group(1)
+        return end_index - len(marker_prefix), marker_prefix.strip()
+    return end_index, None
+
+
 def _extract_scoped_text(text: str, understanding: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     target_clause = understanding.get("target_clause")
     target_section = understanding.get("target_section")
@@ -683,12 +816,15 @@ def _extract_scoped_text(text: str, understanding: dict[str, Any]) -> tuple[str,
     else:
         return text, scope
 
+    end_marker_prefix = None
     if end_index < 0:
         end_index = len(text)
+    else:
+        end_index, end_marker_prefix = _trim_end_marker_prefix(text, end_index)
     scoped = text[start_index:end_index].strip()
     if not scoped:
         return text, scope
-    scope.update({"applied": True, "start_marker": start_marker, "end_marker": end_marker})
+    scope.update({"applied": True, "start_marker": start_marker, "end_marker": end_marker, "end_marker_prefix_trimmed": end_marker_prefix})
     return scoped, scope
 
 
@@ -903,6 +1039,99 @@ def _compose_answer(results: list[SearchResult], retrieval_mode: str) -> str:
     )
 
 
+DATA_FLOW_INPUT_KEYS = (
+    "input",
+    "input_text",
+    "payload",
+    "query_type",
+    "query_length",
+    "top_k",
+    "max_top_k",
+    "pair_count",
+    "input_candidate_count",
+    "metadata_filters",
+)
+
+DATA_FLOW_OUTPUT_KEYS = (
+    "trace_id",
+    "request_id",
+    "status",
+    "normalized_query",
+    "intent",
+    "policy_category_hint",
+    "audience_hint",
+    "time_hints",
+    "ambiguity_flags",
+    "extracted_terms",
+    "retrieval_intent",
+    "target_terms",
+    "target_section",
+    "target_clause",
+    "target_clause_no",
+    "target_subclause",
+    "asked_aspect",
+    "aspect_terms",
+    "exclude_sections",
+    "exclude_clauses",
+    "standalone_query",
+    "expanded_query",
+    "expanded_query_for_future_hybrid",
+    "added_terms",
+    "semantic_drift_check",
+    "tokenizer",
+    "token_count",
+    "tokens_preview",
+    "token_ids_preview",
+    "max_input_tokens",
+    "truncated_by_model",
+    "truncated_for_trace",
+    "dimension",
+    "vector_preview",
+    "enabled_channels",
+    "candidate_limit",
+    "final_top_k",
+    "result_count",
+    "results_preview",
+    "output_candidate_count",
+    "rerank_comparison",
+    "quality_checks",
+    "context_blocks",
+    "scope_guard",
+    "citation_merge",
+    "target_evidence_filter",
+    "answer",
+    "post_answer_faithfulness_check",
+    "langfuse_observations",
+)
+
+
+def _derive_data_flow(key: str, details: dict[str, Any]) -> dict[str, Any]:
+    input_payload: dict[str, Any] = {}
+    output_payload: dict[str, Any] = {}
+
+    if "raw_query" in details:
+        input_payload["raw_message"] = details["raw_query"]
+    for field in DATA_FLOW_INPUT_KEYS:
+        if field in details:
+            input_payload[field] = details[field]
+
+    if "output" in details:
+        output_payload["output"] = details["output"]
+    for field in DATA_FLOW_OUTPUT_KEYS:
+        if field in details:
+            output_payload[field] = details[field]
+
+    if "expanded_query_for_future_hybrid" in output_payload and "expanded_query" not in output_payload:
+        output_payload["expanded_query"] = output_payload["expanded_query_for_future_hybrid"]
+
+    visible_keys = sorted(field for field in details.keys() if field != "data_flow")
+    if not input_payload:
+        input_payload = {"node_key": key, "detail_keys": visible_keys[:12]}
+    if not output_payload:
+        output_payload = {"node_key": key, "detail_keys": visible_keys[:12]}
+    return {"input": input_payload, "output": output_payload}
+
+
 def _step(
     *,
     key: str,
@@ -914,13 +1143,15 @@ def _step(
     execution_mode: str = "sequential",
     children: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    normalized_details = dict(details or {})
+    normalized_details.setdefault("data_flow", _derive_data_flow(key, normalized_details))
     return {
         "key": key,
         "title": title,
         "status": status,
         "execution_mode": execution_mode,
         "summary": summary,
-        "details": details,
+        "details": normalized_details,
         "duration_ms": duration_ms,
         "children": children or [],
     }
@@ -1298,6 +1529,8 @@ def run_chat_trace(
         "target_clause": understanding.get("target_clause"),
         "target_clause_no": understanding.get("target_clause_no"),
         "target_subclause": understanding.get("target_subclause"),
+        "asked_aspect": understanding.get("asked_aspect"),
+        "aspect_terms": understanding.get("aspect_terms"),
         "exclude_sections": understanding.get("exclude_sections"),
         "exclude_clauses": understanding.get("exclude_clauses"),
     }

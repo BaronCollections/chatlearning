@@ -834,6 +834,7 @@ pre {
 
 .choice-box,
 .requirement-detail,
+.data-flow,
 .term-list,
 .pitfall-list,
 .option-list,
@@ -851,6 +852,7 @@ pre {
 
 .choice-box h3,
 .requirement-detail h3,
+.data-flow h3,
 .term-list h3,
 .pitfall-list h3,
 .option-list h3,
@@ -876,6 +878,30 @@ pre {
 
 .choice-box p + p {
   margin-top: 6px;
+}
+
+.data-flow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.data-flow-column {
+  min-width: 0;
+}
+
+.data-flow-column strong {
+  display: block;
+  color: #475467;
+  font-size: 11px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.data-flow-column pre {
+  max-height: 240px;
+  margin-bottom: 0;
+  white-space: pre-wrap;
 }
 
 .choice-box ul {

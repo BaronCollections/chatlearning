@@ -107,6 +107,31 @@ function renderSection(titleText, className) {
   return section;
 }
 
+function renderDataFlow(dataFlow) {
+  if (!dataFlow || typeof dataFlow !== "object") return null;
+  const section = renderSection("真实数据流转", "data-flow");
+  const grid = document.createElement("div");
+  grid.className = "data-flow-grid";
+
+  [
+    ["入参", dataFlow.input],
+    ["出参", dataFlow.output],
+  ].forEach(([labelText, payload]) => {
+    const column = document.createElement("article");
+    column.className = "data-flow-column";
+    const label = document.createElement("strong");
+    label.textContent = labelText;
+    const pre = document.createElement("pre");
+    pre.textContent = formatValue(payload || {});
+    column.append(label, pre);
+    grid.appendChild(column);
+  });
+
+  section.appendChild(grid);
+  return section;
+}
+
+
 function renderTermList(terms) {
   if (!Array.isArray(terms) || terms.length === 0) return null;
   const section = renderSection("术语解释", "term-list");
@@ -367,12 +392,16 @@ function renderDetails(details) {
     "issue_solutions",
     "requirement",
     "requirement_reason",
+    "data_flow",
   ];
   Object.entries(details || {}).forEach(([key, value]) => {
     if (structuredKeys.includes(key)) return;
     appendValue(list, key, value);
   });
   if (list.children.length > 0) wrapper.appendChild(list);
+
+  const dataFlow = renderDataFlow(details?.data_flow);
+  if (dataFlow) wrapper.appendChild(dataFlow);
 
   const requirementNote = renderRequirementDetail(details);
   if (requirementNote) wrapper.appendChild(requirementNote);

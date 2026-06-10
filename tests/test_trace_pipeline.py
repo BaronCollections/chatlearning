@@ -435,3 +435,98 @@ def test_exact_section_query_deduplicates_sources_and_excludes_competing_section
     assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
     evidence = _step(response, "evidence_quality")
     assert evidence["details"]["citation_merge"]["removed_duplicates"] == 2
+
+
+def test_disciplinary_action_scope_removes_next_numbered_section_prefix():
+    penalty_text = (
+        "五、违规行为相应处理 1.1一类违规行为：解除劳动合同。 "
+        "1.2二类违规行为：予以记过处分，自处分生效日起一年内不得调薪并取消当年年终奖激励资格。 "
+        "1.3三类违规行为：予以书面或口头警告。"
+    )
+
+    class PenaltyStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            return [SearchResult(chunk=_discipline_chunk(chunk_id="discipline-penalty-numbered", text=penalty_text), distance=0.2)]
+
+    response = run_chat_trace(
+        "二类违规的处罚是什么",
+        embedding_client=FakeEmbeddingClient(),
+        store=PenaltyStore(),
+        top_k=3,
+    )
+
+    assert "二类违规行为：予以记过处分" in response["answer"]
+    assert "1.3" not in response["answer"]
+    assert "三类违规行为：予以书面或口头警告" not in response["answer"]
+
+
+
+def test_disciplinary_action_query_prefers_penalty_process_over_definition():
+    definition_text = (
+        "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、破坏学校管理秩序等"
+        "致使学校经济、形象、声誉遭受严重损害的行为，是比较严重的违规行为。"
+        "1.师德师风相关的违规行为 2. 违反保密义务行为。"
+    )
+    penalty_text = (
+        "（二）处分流程 1. 二类、三类违规由学部校园长作出最终处理决定；"
+        "一类违规行为由学校纪律制度委员会结合调查结果、调查方处理建议、法务顾问建议，根据本制度规定作出最终处理决定。"
+        "2. 最终处理决定由违规员工的主管及HRG负责向员工传达，听取员工反馈，安排员工签署书面处理决定。"
+        "3. 违规员工如对处理决定有异议，有权提出申诉，申诉期间处理决定维持不变。"
+    )
+
+    class PenaltyStore:
+        def __init__(self):
+            self.calls = []
+
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            self.calls.append({"query_text": query_text, "metadata_filters": metadata_filters})
+            return [
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-definition", text=definition_text), distance=0.05),
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-penalty", text=penalty_text), distance=0.2),
+            ]
+
+    store = PenaltyStore()
+    response = run_chat_trace(
+        "二类违规的处罚是什么",
+        embedding_client=FakeEmbeddingClient(),
+        store=store,
+        top_k=3,
+    )
+
+    filters = store.calls[0]["metadata_filters"]
+    assert filters["asked_aspect"] == "disciplinary_action"
+    assert "处分流程" in filters["target_terms"]
+    assert "违规处理" in filters["target_terms"]
+    rewrite = _step(response, "query_rewrite")
+    assert "处分流程" in rewrite["details"]["expanded_query"]
+    assert "违规处理" in rewrite["details"]["expanded_query"]
+    assert "二类、三类违规由学部校园长作出最终处理决定" in response["answer"]
+    assert "二类违规行为：指违反师德师风" not in response["answer"]
+    assert response["results"][0]["chunk_id"] == "discipline-penalty"
+    rerank = _step(response, "rerank")
+    assert rerank["details"]["rerank_comparison"][0]["chunk_id"] == "discipline-penalty"
+    assert "命中问题面" in rerank["details"]["rerank_comparison"][0]["reason"]
+
+
+def test_every_trace_step_exposes_data_flow_input_and_output():
+    response = run_chat_trace(
+        "员工年假规则是什么？",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=2,
+    )
+
+    def assert_data_flow(step):
+        data_flow = step["details"].get("data_flow")
+        assert data_flow, step["key"]
+        assert "input" in data_flow, step["key"]
+        assert "output" in data_flow, step["key"]
+        for child in step.get("children") or []:
+            assert_data_flow(child)
+
+    for step in response["steps"]:
+        assert_data_flow(step)
+
+    assert _step(response, "request_intake")["details"]["data_flow"]["input"]["raw_message"] == "员工年假规则是什么？"
+    assert _step(response, "normalize_text")["details"]["data_flow"]["output"]["normalized_query"] == "员工年假规则是什么？"
+    assert _step(response, "retrieval_plan")["details"]["data_flow"]["output"]["enabled_channels"] == ["dense_vector"]
