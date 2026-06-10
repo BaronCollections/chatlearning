@@ -56,7 +56,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 4. `trace_pipeline.py` 的 citation 序列化负责把每条结果变成 `[1]`、`[2]` 这样的引用，并带上标题、分类、发布时间、chunk_id、source 和可点击链接。
 5. 前端只渲染后端返回的 `results[].citation`，不会自己猜链接或伪造来源。
 
-云谷制度来源会根据 `import_information_id` 生成详情链接；普通样例或文件来源如果没有真实 URL，就只展示 source/page/chunk metadata。这样可以同时满足学习展示、审计追溯和真实业务回答的可信度要求。
+云谷制度来源会根据 `import_information_id` 生成 `https://work.yungu.org/policyDetail/{id}` 形式的详情链接；普通样例或文件来源如果没有真实 URL，就只展示 source/page/chunk metadata。这样可以同时满足学习展示、审计追溯和真实业务回答的可信度要求。
 
 
 ## 学习颗粒度

@@ -359,7 +359,7 @@ def _source_url(chunk: Any) -> str | None:
 
     import_information_id = _metadata_value(metadata, "import_information_id", "importInformationId")
     if import_information_id is not None and metadata.get("source") == "yungu_policy_system":
-        return "https://work.yungu.org/home/policyDetail?" + f"importInformationId={quote(str(import_information_id))}"
+        return "https://work.yungu.org/policyDetail/" + quote(str(import_information_id))
     return None
 
 

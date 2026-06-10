@@ -230,11 +230,11 @@ def test_run_chat_trace_returns_policy_citations_with_links_for_multiple_hits():
     citations = [result["citation"] for result in response["results"]]
     assert [citation["citation_id"] for citation in citations] == ["[1]", "[2]"]
     assert citations[0]["title"] == "员工年休假条款"
-    assert "importInformationId=2374" in citations[0]["url"]
+    assert citations[0]["url"] == "https://work.yungu.org/policyDetail/2374"
     assert citations[0]["category"] == "HR政策及知识库"
     assert "相关来源" in response["answer"]
     assert "[1]" in response["answer"] and "[2]" in response["answer"]
-    assert "importInformationId=2374" in response["answer"]
+    assert "https://work.yungu.org/policyDetail/2374" in response["answer"]
 
     evidence = _step(response, "evidence_quality")
     first_block = evidence["details"]["context_blocks"][0]
