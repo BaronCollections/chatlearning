@@ -118,6 +118,17 @@ function renderInterviewQuestions(values) {
   return section;
 }
 
+function renderRequirementDetail(details) {
+  if (!details?.requirement && !details?.requirement_reason) return null;
+  const section = renderSection("流程必要性", "requirement-detail");
+  const note = document.createElement("p");
+  note.className = "requirement-note";
+  const label = details.requirement ? `${details.requirement}：` : "";
+  note.textContent = `${label}${details.requirement_reason || "根据业务目标、成本、质量要求和风险等级决定是否执行。"}`;
+  section.appendChild(note);
+  return section;
+}
+
 function renderQualityChecks(checks) {
   if (!Array.isArray(checks) || checks.length === 0) return null;
   const section = renderSection("质量检查", "quality-check-list");
@@ -251,12 +262,17 @@ function renderDetails(details) {
     "options",
     "inner_steps",
     "interview_questions",
+    "requirement",
+    "requirement_reason",
   ];
   Object.entries(details || {}).forEach(([key, value]) => {
     if (structuredKeys.includes(key)) return;
     appendValue(list, key, value);
   });
   if (list.children.length > 0) wrapper.appendChild(list);
+
+  const requirementNote = renderRequirementDetail(details);
+  if (requirementNote) wrapper.appendChild(requirementNote);
 
   const termList = renderTermList(details?.term_definitions);
   if (termList) wrapper.appendChild(termList);
@@ -314,12 +330,96 @@ function term(termText, definition) {
   return { term: termText, definition };
 }
 
+
+const globalTermCatalog = [
+  { term: "RAG", definition: "Retrieval-Augmented Generation，先检索可信知识，再让模型基于证据回答，适合制度、知识库、文档问答。", aliases: ["RAG", "检索增强"] },
+  { term: "Query", definition: "进入检索系统的问题表达，可以是用户原文，也可以是经过清洗、改写后的检索问题。", aliases: ["Query", "查询"] },
+  { term: "Query rewrite", definition: "把口语化、上下文依赖的问题改写成更适合检索的独立问题；它能提升召回，也可能引入语义漂移。", aliases: ["Query 改写", "rewrite", "改写"] },
+  { term: "Semantic drift", definition: "处理前后问题的对象、时间、动作或范围发生变化，导致检索和答案偏离用户原意。", aliases: ["语义漂移", "drift"] },
+  { term: "Token", definition: "模型词表里的最小处理单元，不等同于中文词语；同一句话会被 tokenizer 切成多个 token id。", aliases: ["token", "分词"] },
+  { term: "Token id", definition: "token 在模型词表中的整数编号，展示它能帮助理解模型真实接收的输入。", aliases: ["token id", "Token id"] },
+  { term: "Embedding", definition: "把文本映射成向量，语义相近的文本在向量空间里距离更近。", aliases: ["Embedding", "向量"] },
+  { term: "Dense embedding", definition: "稠密向量表示，适合语义相似度检索，但对编号、专有名词等精确匹配不一定敏感。", aliases: ["dense", "稠密"] },
+  { term: "Sparse / BM25", definition: "基于词项匹配的稀疏检索信号，适合制度编号、部门名、日期、人名等精确匹配，常和 dense 混合使用。", aliases: ["Sparse", "BM25", "关键词"] },
+  { term: "Hybrid search", definition: "混合检索，把向量语义召回和关键词/稀疏召回合并，兼顾语义泛化和精确命中。", aliases: ["Hybrid", "混合检索"] },
+  { term: "Chunk", definition: "把长文档按标题、段落、条款或 token 上限拆成可检索片段，是 RAG 的基本索引单元。", aliases: ["chunk", "切块"] },
+  { term: "Metadata filter", definition: "基于分类、权限、时间、来源等结构化字段过滤候选，企业 RAG 通常必须做。", aliases: ["metadata", "filter", "过滤"] },
+  { term: "Top-k", definition: "召回候选数量；太小容易漏证据，太大增加成本并带入噪声。", aliases: ["top_k", "top-k", "Top-k"] },
+  { term: "Initial retrieval", definition: "初始召回，从向量库、关键词索引或混合检索中找候选证据；没有召回就没有可依据的上下文。", aliases: ["初始召回", "retrieval", "召回"] },
+  { term: "Rerank", definition: "对初始候选重新排序，常用于减少语义相似但业务不相关的结果；它是质量增强，不是所有场景都必须。", aliases: ["Rerank", "重排序", "rerank"] },
+  { term: "Cross-encoder", definition: "同时读取 query 和文档片段并输出相关性分数的重排模型，质量通常更好但成本和延迟更高。", aliases: ["Cross-encoder", "cross encoder"] },
+  { term: "Evidence quality", definition: "检查证据是否相关、最新、来源可信、无冲突，并决定是否回答、拒答或反问。", aliases: ["证据质量", "evidence"] },
+  { term: "Hallucination", definition: "模型生成了缺少证据或与证据冲突的内容；RAG 通过引用证据、阈值和拒答机制降低它。", aliases: ["hallucination", "幻觉"] },
+  { term: "pgvector", definition: "PostgreSQL 的向量扩展，可以把业务 metadata 和向量索引放在同一个数据库系统里。", aliases: ["pgvector", "PostgreSQL"] },
+  { term: "ANN", definition: "Approximate Nearest Neighbor，近似最近邻检索，用可接受的近似换取高维向量检索速度。", aliases: ["ANN", "近似最近邻"] },
+  { term: "HNSW", definition: "常见 ANN 图索引结构，适合高维向量快速近邻搜索，pgvector 也支持。", aliases: ["HNSW"] },
+  { term: "LangChain", definition: "LLM 应用开发框架，提供 prompt、model、tool、retriever 等组件，但生产系统仍需补边界、观测和降级。", aliases: ["LangChain"] },
+  { term: "LangGraph", definition: "把 Agent/LLM 流程建成有状态图，适合分支、循环、并行、checkpoint 和人工介入。", aliases: ["LangGraph"] },
+  { term: "Agent", definition: "能基于状态选择下一步动作的模型驱动流程，通常会调用工具、检索器或其他子任务。", aliases: ["Agent"] },
+  { term: "Tool call", definition: "模型请求执行外部函数或服务，生产里必须限制输入输出 schema、权限和调用次数。", aliases: ["Tool Call", "工具调用"] },
+  { term: "Observation", definition: "工具调用返回给 Agent 的结果，应该进入 trace，方便审计模型为什么继续下一步。", aliases: ["Observation"] },
+  { term: "Trace / Span", definition: "trace 表示一次完整请求，span 表示其中一个步骤；二者用于定位 RAG/Agent 错误发生在哪个环节。", aliases: ["trace", "span", "Trace", "Span"] },
+  { term: "Langfuse", definition: "LLM/RAG/Agent 观测平台，可记录 trace、span、输入输出、耗时、评分和回放。", aliases: ["Langfuse"] },
+  { term: "Checkpoint", definition: "保存工作流状态，失败后可以从中间恢复，避免整条链路重跑。", aliases: ["Checkpoint", "checkpoint"] },
+  { term: "Reducer", definition: "在图工作流里合并多个节点输出的函数，决定并行结果如何写回共享 state。", aliases: ["Reducer", "reducer"] },
+  { term: "Upsert", definition: "有则更新、无则插入，适合知识库导入的断点续跑和重复写入。", aliases: ["Upsert", "upsert"] },
+];
+
+const requirementLabels = {
+  required: "必经",
+  optional: "可选增强",
+  conditional: "条件触发",
+};
+
+const requirementDescriptions = {
+  required: "这一步是该流程的核心约束，不执行会破坏链路语义或无法产生可信输出。",
+  optional: "这一步用于提升质量、解释性或稳定性，可以按业务质量、延迟和成本要求选择。",
+  conditional: "这一步由场景触发，例如检索策略、输入复杂度、权限要求或部署方式不同会影响是否执行。",
+};
+
+function normalizeRequirement(value) {
+  return ["required", "optional", "conditional"].includes(value) ? value : "required";
+}
+
+function enrichTermDefinitions(details = {}, item = {}) {
+  const existing = Array.isArray(details.term_definitions) ? details.term_definitions : [];
+  const terms = [...existing];
+  const seen = new Set(existing.map((entry) => entry.term || entry.name));
+  const searchable = [item.id, item.title, item.summary, JSON.stringify(details)].filter(Boolean).join(" ").toLowerCase();
+
+  globalTermCatalog.forEach((entry) => {
+    const matched = entry.aliases.some((alias) => searchable.includes(String(alias).toLowerCase()));
+    if (matched && !seen.has(entry.term)) {
+      seen.add(entry.term);
+      terms.push(term(entry.term, entry.definition));
+    }
+  });
+  return terms;
+}
+
+function withLearningDetails(details, item, requirement, requirementReason) {
+  const normalizedRequirement = normalizeRequirement(requirement);
+  const reason = requirementReason || details.requirement_reason || requirementDescriptions[normalizedRequirement];
+  return {
+    ...details,
+    requirement: requirementLabels[normalizedRequirement],
+    requirement_reason: reason,
+    term_definitions: enrichTermDefinitions(details, item),
+  };
+}
+
 function microStep(title, summary, details = {}) {
   return { title, summary, details };
 }
 
 function node(id, title, summary, extra = {}) {
   const defaults = nodeDefaults(id, title);
+  const requirement = normalizeRequirement(extra.requirement || defaults.requirement || "required");
+  const details = {
+    ...(defaults.details || {}),
+    ...(extra.details || {}),
+  };
+  const requirementReason = extra.requirementReason || details.requirement_reason || requirementDescriptions[requirement];
   return {
     id,
     title,
@@ -328,10 +428,9 @@ function node(id, title, summary, extra = {}) {
     status: "ok",
     ...defaults,
     ...extra,
-    details: {
-      ...(defaults.details || {}),
-      ...(extra.details || {}),
-    },
+    requirement,
+    requirementReason,
+    details: withLearningDetails(details, { id, title, summary }, requirement, requirementReason),
     innerSteps: extra.innerSteps || defaults.innerSteps || [],
   };
 }
@@ -566,10 +665,15 @@ function mergeTraceNode(staticNode, liveSteps) {
     return {
       ...staticNode,
       innerSteps: staticInnerSteps,
-      details: {
-        ...(staticNode.details || {}),
-        inner_steps: staticInnerSteps.map((item) => item.title),
-      },
+      details: withLearningDetails(
+        {
+          ...(staticNode.details || {}),
+          inner_steps: staticInnerSteps.map((item) => item.title),
+        },
+        staticNode,
+        staticNode.requirement,
+        staticNode.requirementReason,
+      ),
     };
   }
 
@@ -586,13 +690,18 @@ function mergeTraceNode(staticNode, liveSteps) {
     mode: live.execution_mode || staticNode.mode || "sequential",
     duration_ms: live.duration_ms,
     innerSteps,
-    details: {
-      ...(staticNode.details || {}),
-      ...(live.details || {}),
-      backend_step_key: live.key,
-      backend_status: live.status || "ok",
-      inner_steps: innerSteps.map((child) => child.title),
-    },
+    details: withLearningDetails(
+      {
+        ...(staticNode.details || {}),
+        ...(live.details || {}),
+        backend_step_key: live.key,
+        backend_status: live.status || "ok",
+        inner_steps: innerSteps.map((child) => child.title),
+      },
+      staticNode,
+      staticNode.requirement,
+      staticNode.requirementReason,
+    ),
   };
 }
 
@@ -616,10 +725,10 @@ function hydrateRows(rows, liveSteps) {
 
 function buildRagWorkflow(traceData) {
   const rows = [
-    { type: "serial", nodes: [node("request_intake", "请求接入", "接收用户问题、top_k 和本次 trace 上下文。", { traceKey: "request_intake", sequence: "01", details: { business_goal: "确认这次问题要进入哪条 RAG/Agent 链路，而不是直接丢给模型。" } })] },
-    { type: "serial", nodes: [node("input_guardrails", "输入护栏", "检查空输入、超长输入、注入风险和参数边界。", { traceKey: "input_guardrails", sequence: "02", details: { why: "真实业务里模型调用前必须先判断请求是否安全、是否可处理。" } })] },
-    { type: "serial", nodes: [node("normalize_text", "文本归一化", "只处理格式：去首尾空白、压缩连续空白，不偷偷改写语义。", { traceKey: "normalize_text", sequence: "03", details: { why: "清洗和改写要分离，否则 trace 中看不出原始问题被改成了什么。" } })] },
-    { type: "serial", nodes: [node("query_understanding", "Query 理解", "识别意图、制度类别、对象范围、时间提示和歧义。", { traceKey: "query_understanding", sequence: "04", details: { why: "后续检索过滤、改写、是否反问都依赖这里的判断。" } })] },
+    { type: "serial", nodes: [node("request_intake", "请求接入", "接收用户问题、top_k 和本次 trace 上下文。", { traceKey: "request_intake", sequence: "01", requirement: "required", requirementReason: "入口层是所有后续 trace、权限和参数校验的来源，属于必经步骤。", details: { business_goal: "确认这次问题要进入哪条 RAG/Agent 链路，而不是直接丢给模型。" } })] },
+    { type: "serial", nodes: [node("input_guardrails", "输入护栏", "检查空输入、超长输入、注入风险和参数边界。", { traceKey: "input_guardrails", sequence: "02", requirement: "required", requirementReason: "企业系统必须先判断请求是否可处理、是否安全，否则后续模型和工具调用都会放大风险。", details: { why: "真实业务里模型调用前必须先判断请求是否安全、是否可处理。" } })] },
+    { type: "serial", nodes: [node("normalize_text", "文本归一化", "只处理格式：去首尾空白、压缩连续空白，不偷偷改写语义。", { traceKey: "normalize_text", sequence: "03", requirement: "required", requirementReason: "归一化保证缓存、日志和 tokenizer 输入稳定，但它只能改格式，不能改语义。", details: { why: "清洗和改写要分离，否则 trace 中看不出原始问题被改成了什么。" } })] },
+    { type: "serial", nodes: [node("query_understanding", "Query 理解", "识别意图、制度类别、对象范围、时间提示和歧义。", { traceKey: "query_understanding", sequence: "04", requirement: "required", requirementReason: "真实业务要知道问题问谁、问什么范围、是否缺条件；否则权限过滤和证据选择都会错。", details: { why: "后续检索过滤、改写、是否反问都依赖这里的判断。" } })] },
     {
       type: "parallel_group",
       id: "rag_parallel_prepare",
@@ -629,24 +738,24 @@ function buildRagWorkflow(traceData) {
         {
           title: "语义表示路径",
           nodes: [
-            node("query_rewrite", "Query 改写", "补齐独立问题和同义词，提升召回但不能扩大问题范围。", { traceKey: "query_rewrite", sequence: "05A", mode: "parallel", details: { why: "用户问题常常很短，适度改写可以把口语问题变成可检索表达。" } }),
-            node("tokenize", "分词与 token", "展示模型实际处理的 token 和 token id，确认输入没有被截断。", { traceKey: "tokenize", sequence: "05B", mode: "parallel", details: { why: "教学和调试时要看到模型到底吃进去了什么。" } }),
-            node("query_embedding", "Query Embedding", "把检索问题转成向量，进入语义相似度空间。", { traceKey: "query_embedding", sequence: "05C", mode: "parallel", details: embeddingDetails }),
+            node("query_rewrite", "Query 改写", "补齐独立问题和同义词，提升召回但不能扩大问题范围。", { traceKey: "query_rewrite", sequence: "05A", mode: "parallel", requirement: "optional", requirementReason: "短 query、多轮省略或同义词较多时建议做；如果用户问题已经完整、业务风险高，也可以跳过或只做保守改写。", details: { why: "用户问题常常很短，适度改写可以把口语问题变成可检索表达。" } }),
+            node("tokenize", "分词与 token", "展示模型实际处理的 token 和 token id，确认输入没有被截断。", { traceKey: "tokenize", sequence: "05B", mode: "parallel", requirement: "conditional", requirementReason: "生产链路通常做长度检查；完整展示 token/token id 更偏教学、调试和截断排查，按场景触发。", details: { why: "教学和调试时要看到模型到底吃进去了什么。" } }),
+            node("query_embedding", "Query Embedding", "把检索问题转成向量，进入语义相似度空间。", { traceKey: "query_embedding", sequence: "05C", mode: "parallel", requirement: "conditional", requirementReason: "如果使用向量或混合检索，这是必经；如果某些场景只走 BM25/精确过滤，可以不生成 query embedding。", details: embeddingDetails }),
           ],
         },
         {
           title: "业务约束路径",
           nodes: [
-            node("retrieval_plan", "检索计划", "准备 top_k、向量库、分类、权限、时间和 SQL 形状。", { traceKey: "retrieval_plan", sequence: "05D", mode: "parallel", details: { why: "真实企业 RAG 不能只看语义相似，还要受权限、分类、时效和来源约束。", options: ["按用户身份加 permission_scope 过滤", "按制度分类加 metadata filter", "按发布时间或生效时间做 freshness check"] } }),
+            node("retrieval_plan", "检索计划", "准备 top_k、向量库、分类、权限、时间和 SQL 形状。", { traceKey: "retrieval_plan", sequence: "05D", mode: "parallel", requirement: "required", requirementReason: "企业 RAG 必须先确定权限、分类、top_k 和检索方式，否则召回结果不可控。", details: { why: "真实企业 RAG 不能只看语义相似，还要受权限、分类、时效和来源约束。", options: ["按用户身份加 permission_scope 过滤", "按制度分类加 metadata filter", "按发布时间或生效时间做 freshness check"] } }),
           ],
         },
       ],
     },
     { type: "merge", title: "查询表示与检索计划汇聚", nodes: [] },
-    { type: "serial", nodes: [node("initial_retrieval", "初始召回", "用向量库或混合检索找到候选 chunk。", { traceKey: "initial_retrieval", sequence: "07" })] },
-    { type: "serial", nodes: [node("rerank", "Rerank 重排序", "对候选证据重新打分，把更相关、更可引用的内容排到前面。", { traceKey: "rerank", sequence: "08", details: { why: "初始召回负责找全，rerank 负责把最可能回答问题的证据放到前面。" } })] },
-    { type: "serial", nodes: [node("evidence_quality", "证据质量检查", "检查相关度、来源、时效、冲突和是否需要反问。", { traceKey: "evidence_quality", sequence: "09" })] },
-    { type: "serial", nodes: [node("answer_and_observe", "答案与观测", "基于证据组织回答，并记录 trace、耗时和质量信号。", { traceKey: "answer_and_observe", sequence: "10", mode: "observe", details: { why: "最终答案只是结果，trace 才能帮助调试为什么这么答。" } })] },
+    { type: "serial", nodes: [node("initial_retrieval", "初始召回", "用向量库或混合检索找到候选 chunk。", { traceKey: "initial_retrieval", sequence: "07", requirement: "required", requirementReason: "初始召回是 RAG 的必经步骤；没有候选证据，后面的 rerank、证据检查和回答都没有依据。" })] },
+    { type: "serial", nodes: [node("rerank", "Rerank 重排序", "对候选证据重新打分，把更相关、更可引用的内容排到前面。", { traceKey: "rerank", sequence: "08", requirement: "optional", requirementReason: "Rerank 是可选增强：候选多、相似但不相关的结果多、答案质量要求高时建议做；低延迟、小知识库或高精度过滤场景可以先不用。", details: { why: "初始召回负责找全，rerank 负责把最可能回答问题的证据放到前面。" } })] },
+    { type: "serial", nodes: [node("evidence_quality", "证据质量检查", "检查相关度、来源、时效、冲突和是否需要反问。", { traceKey: "evidence_quality", sequence: "09", requirement: "required", requirementReason: "企业制度问答不能只要检索结果，还必须判断证据是否足够、是否过期、是否冲突。" })] },
+    { type: "serial", nodes: [node("answer_and_observe", "答案与观测", "基于证据组织回答，并记录 trace、耗时和质量信号。", { traceKey: "answer_and_observe", sequence: "10", mode: "observe", requirement: "required", requirementReason: "回答是业务交付结果，观测是定位质量问题的基础；生产系统至少要保留可审计 trace。", details: { why: "最终答案只是结果，trace 才能帮助调试为什么这么答。" } })] },
   ];
   return {
     id: "rag-core",
@@ -836,7 +945,8 @@ function renderNodeDetail(item) {
   const meta = document.createElement("div");
   meta.className = "node-detail-meta";
   const duration = item.duration_ms == null ? "" : ` · ${item.duration_ms} ms`;
-  meta.textContent = `${modeLabel(item.mode)} · ${item.status || "ok"}${duration}`;
+  const requirement = normalizeRequirement(item.requirement);
+  meta.textContent = `${modeLabel(item.mode)} · ${requirementLabels[requirement]} · ${item.status || "ok"}${duration}`;
 
   const title = document.createElement("h3");
   title.textContent = shortTitle(item.title);
@@ -888,6 +998,7 @@ function renderWorkflowNode(item, rowIndex, detailPanel) {
     "workflow-node",
     `mode-${item.mode || "sequential"}`,
     `status-${item.status || "ok"}`,
+    `requirement-${normalizeRequirement(item.requirement)}`,
   ].join(" ");
 
   const top = document.createElement("div");
@@ -898,7 +1009,10 @@ function renderWorkflowNode(item, rowIndex, detailPanel) {
   const badge = document.createElement("span");
   badge.className = "tree-mode-badge";
   badge.textContent = modeLabel(item.mode || "sequential");
-  top.append(index, badge);
+  const requirementBadge = document.createElement("span");
+  requirementBadge.className = "tree-requirement-badge";
+  requirementBadge.textContent = requirementLabels[normalizeRequirement(item.requirement)];
+  top.append(index, badge, requirementBadge);
 
   const title = document.createElement("div");
   title.className = "tree-node-title";
@@ -908,7 +1022,11 @@ function renderWorkflowNode(item, rowIndex, detailPanel) {
   summary.className = "tree-node-summary";
   summary.textContent = item.summary;
 
-  button.append(top, title, summary);
+  const requirementNote = document.createElement("div");
+  requirementNote.className = "requirement-note";
+  requirementNote.textContent = item.requirementReason || item.details?.requirement_reason || requirementDescriptions[normalizeRequirement(item.requirement)];
+
+  button.append(top, title, summary, requirementNote);
 
   if (Array.isArray(item.innerSteps) && item.innerSteps.length > 0) {
     const innerList = document.createElement("div");
@@ -938,9 +1056,11 @@ function renderWorkflowNode(item, rowIndex, detailPanel) {
   return button;
 }
 
-function renderInlineConnector() {
+function renderInlineConnector(targetRequirement = "required") {
   const connector = document.createElement("div");
-  connector.className = "elbow-connector inline";
+  const requirement = normalizeRequirement(targetRequirement);
+  connector.className = `elbow-connector inline connector-${requirement}`;
+  connector.title = `${requirementLabels[requirement]}：${requirementDescriptions[requirement]}`;
   return connector;
 }
 
@@ -957,7 +1077,9 @@ function renderMergeRail(row) {
 
 function renderWorkflowRow(row, rowIndex, detailPanel) {
   const wrapper = document.createElement("section");
-  wrapper.className = `workflow-row ${row.type}`;
+  const firstNode = row.nodes?.[0] || row.branches?.[0]?.nodes?.[0];
+  const rowRequirement = normalizeRequirement(row.requirement || firstNode?.requirement);
+  wrapper.className = `workflow-row ${row.type} requirement-${rowRequirement}`;
 
   if (row.type === "parallel_group") {
     const label = document.createElement("div");
@@ -975,7 +1097,7 @@ function renderWorkflowRow(row, rowIndex, detailPanel) {
       branchTitle.textContent = branch.title;
       branchEl.appendChild(branchTitle);
       branch.nodes.forEach((item, index) => {
-        if (index > 0) branchEl.appendChild(renderInlineConnector());
+        if (index > 0) branchEl.appendChild(renderInlineConnector(item.requirement));
         branchEl.appendChild(renderWorkflowNode(item, rowIndex, detailPanel));
       });
       branches.appendChild(branchEl);
@@ -992,7 +1114,7 @@ function renderWorkflowRow(row, rowIndex, detailPanel) {
   const nodes = document.createElement("div");
   nodes.className = "workflow-row-nodes";
   (row.nodes || []).forEach((item, index) => {
-    if (index > 0) nodes.appendChild(renderInlineConnector());
+    if (index > 0) nodes.appendChild(renderInlineConnector(item.requirement));
     nodes.appendChild(renderWorkflowNode(item, rowIndex, detailPanel));
   });
   wrapper.appendChild(nodes);
@@ -1038,6 +1160,16 @@ function renderWorkflowGraph(workflow) {
   const stats = countWorkflowStats(workflow);
   intro.textContent = `${workflow.summary} · ${stats.phases} 个主阶段 / ${stats.innerSteps} 个细节点`;
   graph.appendChild(intro);
+
+  const requirementLegend = document.createElement("div");
+  requirementLegend.className = "requirement-legend";
+  ["required", "optional", "conditional"].forEach((requirement) => {
+    const item = document.createElement("span");
+    item.className = `legend-item connector-${requirement}`;
+    item.textContent = `${requirementLabels[requirement]}：${requirementDescriptions[requirement]}`;
+    requirementLegend.appendChild(item);
+  });
+  graph.appendChild(requirementLegend);
 
   const detailPanel = document.createElement("aside");
   detailPanel.className = "tree-detail-panel";
