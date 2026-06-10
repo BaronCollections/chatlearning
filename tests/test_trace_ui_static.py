@@ -105,6 +105,13 @@ def test_common_questions_include_brief_answers_and_are_deduplicated():
     assert ".interview-answer" in app_css
     assert ".common-question-list" in app_css
 
+    assert "在真实业务里失败时，应该看哪些日志或 trace" not in app_js
+    assert "输入、输出和边界条件分别是什么" not in app_js
+    assert "这个子步骤的输入是什么，输出又交给了谁" not in app_js
+    assert "为什么不能只记录归一化后的 query" in app_js
+    assert "RAG 的问题应该优先看召回还是生成" in app_js
+    assert "参见型片段为什么不能直接作为答案证据" in app_js
+
 
 
 def test_workflow_explains_terms_and_required_vs_optional_steps():
