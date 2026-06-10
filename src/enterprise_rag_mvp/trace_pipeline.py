@@ -511,6 +511,49 @@ def _is_direct_target_evidence(result: SearchResult, understanding: dict[str, An
     return bool(isinstance(scope, dict) and scope.get("applied"))
 
 
+SEMANTIC_TOPIC_TERMS_BY_CATEGORY = {
+    "leave": ["年假", "年休假", "带薪年休假", "休假管理办法"],
+    "attendance": ["考勤", "迟到", "早退", "旷工", "离岗"],
+    "finance": ["报销", "采购", "发票", "财务", "票据"],
+    "security": ["安全", "账号", "数据", "外传", "凭证"],
+    "conduct": ["违规", "处分", "处罚", "旷工", "弄虚作假", "虚假报销", "纪律"],
+}
+
+
+def _semantic_topic_terms(understanding: dict[str, Any]) -> list[str]:
+    terms = [str(term) for term in understanding.get("extracted_terms") or [] if str(term) != "员工"]
+    category_terms = SEMANTIC_TOPIC_TERMS_BY_CATEGORY.get(str(understanding.get("policy_category_hint") or ""), [])
+    for term in category_terms:
+        if term not in terms:
+            terms.append(term)
+    return terms
+
+
+def _filter_semantic_topic_evidence(results: list[SearchResult], understanding: dict[str, Any]) -> tuple[list[SearchResult], dict[str, Any]]:
+    topic_terms = _semantic_topic_terms(understanding)
+    if not topic_terms:
+        return results, {"applied": False, "reason": "普通语义查询没有明确主题词，不做最终证据过滤。"}
+    retained = []
+    for result in results:
+        haystack = " ".join([result.chunk.text, " ".join(result.chunk.heading_path), _metadata_text(result.chunk)])
+        if any(term in haystack for term in topic_terms):
+            retained.append(result)
+    if not retained:
+        return results, {
+            "applied": False,
+            "topic_terms": topic_terms,
+            "reason": "未找到命中主题词的候选，保守保留原候选并交给质量检查。",
+        }
+    return retained, {
+        "applied": True,
+        "topic_terms": topic_terms,
+        "input_count": len(results),
+        "output_count": len(retained),
+        "dropped_chunk_ids": [result.chunk.chunk_id for result in results if result not in retained],
+        "reason": "普通语义查询按主题词过滤最终证据，避免把只因泛词或向量距离接近的候选展示为相关来源。",
+    }
+
+
 def _classify_evidence(result: SearchResult, understanding: dict[str, Any]) -> dict[str, Any]:
     text = result.chunk.text
     evidence_type = "semantic_candidate"
@@ -544,7 +587,7 @@ def _classify_evidence(result: SearchResult, understanding: dict[str, Any]) -> d
 
 def _filter_target_evidence(results: list[SearchResult], understanding: dict[str, Any]) -> tuple[list[SearchResult], dict[str, Any]]:
     if understanding.get("retrieval_intent") != "exact_policy_lookup":
-        return results, {"applied": False, "reason": "非精确制度查询，不过滤候选证据。"}
+        return _filter_semantic_topic_evidence(results, understanding)
     evidence_classifications = [_classify_evidence(result, understanding) for result in results]
     usable_chunk_ids = {item["chunk_id"] for item in evidence_classifications if item["usable_as_final"]}
     direct_results = [result for result in results if result.chunk.chunk_id in usable_chunk_ids]

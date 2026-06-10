@@ -860,3 +860,18 @@ def test_in_memory_demo_handles_absenteeism_penalty_typo_query():
     assert "事实：旷工 2 天" in response["answer"]
     assert "扣除旷工期间工资" in response["answer"]
     assert "给予记过处分" in response["answer"]
+
+
+def test_in_memory_demo_filters_unrelated_semantic_candidates_from_answer_sources():
+    response = run_chat_trace(
+        "员工年假规则是什么？",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=3,
+    )
+
+    chunk_ids = [result["chunk_id"] for result in response["results"]]
+    assert chunk_ids == ["leave-annual-001"]
+    assert "员工休假管理办法" in response["answer"]
+    assert "旷工处理" not in response["answer"]
+    assert "员工纪律制度" not in response["answer"]
