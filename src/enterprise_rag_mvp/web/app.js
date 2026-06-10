@@ -7,6 +7,9 @@ const workflowSelect = document.querySelector("#workflowSelect");
 const clearButton = document.querySelector("#clearButton");
 
 let latestTraceData = null;
+let detailDrawer = null;
+let detailBackdrop = null;
+let selectedDetailTrigger = null;
 
 function appendMessage(role, text) {
   const article = document.createElement("article");
@@ -1211,45 +1214,62 @@ function renderNodeDetail(item) {
   const title = document.createElement("h3");
   title.textContent = shortTitle(item.title);
 
-  const collapse = document.createElement("button");
-  collapse.type = "button";
-  collapse.className = "detail-collapse-button";
-  collapse.textContent = "收起";
-  collapse.addEventListener("click", () => collapseDetailPanel());
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "drawer-close-button";
+  close.textContent = "关闭";
+  close.addEventListener("click", () => closeNodeDetailDrawer());
 
   const summary = document.createElement("p");
   summary.textContent = item.summary;
 
-  header.append(meta, title, collapse, summary);
+  header.append(meta, title, close, summary);
   panel.append(header, renderDetails(item.details));
   return panel;
 }
 
-function collapseDetailPanel() {
-  const detailPanel = traceSteps.querySelector(".tree-detail-panel");
-  if (!detailPanel) return;
-  detailPanel.classList.add("collapsed");
-  detailPanel.innerHTML = "";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "detail-open-button";
-  button.textContent = "详情";
-  button.addEventListener("click", () => {
-    detailPanel.classList.remove("collapsed");
-    detailPanel.innerHTML = '<div class="node-detail-empty">点击流程节点查看详细解释。</div>';
-  });
-  detailPanel.appendChild(button);
+function ensureNodeDetailDrawer() {
+  if (detailDrawer && detailBackdrop) return { drawer: detailDrawer, backdrop: detailBackdrop };
+
+  detailBackdrop = document.createElement("div");
+  detailBackdrop.className = "node-detail-backdrop";
+  detailBackdrop.addEventListener("click", () => closeNodeDetailDrawer());
+
+  detailDrawer = document.createElement("aside");
+  detailDrawer.className = "node-detail-drawer";
+  detailDrawer.setAttribute("aria-label", "流程节点详情");
+
+  document.body.append(detailBackdrop, detailDrawer);
+  return { drawer: detailDrawer, backdrop: detailBackdrop };
 }
 
-function selectWorkflowNode(item, nodeButton, detailPanel) {
+function openNodeDetailDrawer(item, trigger) {
+  const { drawer, backdrop } = ensureNodeDetailDrawer();
+  drawer.innerHTML = "";
+  drawer.appendChild(renderNodeDetail(item));
+  drawer.classList.add("open");
+  backdrop.classList.add("open");
+  document.body.classList.add("detail-drawer-open");
+  selectedDetailTrigger = trigger || null;
+}
+
+function closeNodeDetailDrawer() {
+  if (!detailDrawer || !detailBackdrop) return;
+  detailDrawer.classList.remove("open");
+  detailBackdrop.classList.remove("open");
+  document.body.classList.remove("detail-drawer-open");
+  traceSteps.querySelectorAll(".trace-tree-node.selected, .inner-step-chip.selected").forEach((selected) => selected.classList.remove("selected"));
+  if (selectedDetailTrigger) selectedDetailTrigger.focus?.();
+  selectedDetailTrigger = null;
+}
+
+function selectWorkflowNode(item, nodeButton) {
   traceSteps.querySelectorAll(".trace-tree-node.selected, .inner-step-chip.selected").forEach((selected) => selected.classList.remove("selected"));
   nodeButton.classList.add("selected");
-  detailPanel.classList.remove("collapsed");
-  detailPanel.innerHTML = "";
-  detailPanel.appendChild(renderNodeDetail(item));
+  openNodeDetailDrawer(item, nodeButton);
 }
 
-function renderWorkflowNode(item, rowIndex, detailPanel) {
+function renderWorkflowNode(item, rowIndex) {
   const button = document.createElement("article");
   button.setAttribute("role", "button");
   button.tabIndex = 0;
@@ -1299,18 +1319,18 @@ function renderWorkflowNode(item, rowIndex, detailPanel) {
       chip.textContent = `${index + 1}. ${normalized.title}`;
       chip.addEventListener("click", (event) => {
         event.stopPropagation();
-        selectWorkflowNode(normalized, chip, detailPanel);
+        selectWorkflowNode(normalized, chip);
       });
       innerList.appendChild(chip);
     });
     button.appendChild(innerList);
   }
 
-  button.addEventListener("click", () => selectWorkflowNode(item, button, detailPanel));
+  button.addEventListener("click", () => selectWorkflowNode(item, button));
   button.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      selectWorkflowNode(item, button, detailPanel);
+      selectWorkflowNode(item, button);
     }
   });
   return button;
@@ -1335,7 +1355,7 @@ function renderMergeRail(row) {
   return rail;
 }
 
-function renderWorkflowRow(row, rowIndex, detailPanel) {
+function renderWorkflowRow(row, rowIndex) {
   const wrapper = document.createElement("section");
   const firstNode = row.nodes?.[0] || row.branches?.[0]?.nodes?.[0];
   const rowRequirement = normalizeRequirement(row.requirement || firstNode?.requirement);
@@ -1358,7 +1378,7 @@ function renderWorkflowRow(row, rowIndex, detailPanel) {
       branchEl.appendChild(branchTitle);
       branch.nodes.forEach((item, index) => {
         if (index > 0) branchEl.appendChild(renderInlineConnector(item.requirement));
-        branchEl.appendChild(renderWorkflowNode(item, rowIndex, detailPanel));
+        branchEl.appendChild(renderWorkflowNode(item, rowIndex));
       });
       branches.appendChild(branchEl);
     });
@@ -1375,7 +1395,7 @@ function renderWorkflowRow(row, rowIndex, detailPanel) {
   nodes.className = "workflow-row-nodes";
   (row.nodes || []).forEach((item, index) => {
     if (index > 0) nodes.appendChild(renderInlineConnector(item.requirement));
-    nodes.appendChild(renderWorkflowNode(item, rowIndex, detailPanel));
+    nodes.appendChild(renderWorkflowNode(item, rowIndex));
   });
   wrapper.appendChild(nodes);
   return wrapper;
@@ -1431,20 +1451,14 @@ function renderWorkflowGraph(workflow) {
   });
   graph.appendChild(requirementLegend);
 
-  const detailPanel = document.createElement("aside");
-  detailPanel.className = "tree-detail-panel";
-  detailPanel.innerHTML = '<div class="node-detail-empty">点击流程节点查看工具、输入输出、选型原因和真实业务坑点。</div>';
-
-  workflow.rows.forEach((row, index) => graph.appendChild(renderWorkflowRow(row, index, detailPanel)));
+  workflow.rows.forEach((row, index) => graph.appendChild(renderWorkflowRow(row, index)));
   canvas.appendChild(graph);
-  workbench.append(canvas, detailPanel);
+  workbench.appendChild(canvas);
   traceSteps.appendChild(workbench);
-
-  const firstNode = traceSteps.querySelector(".trace-tree-node");
-  if (firstNode) firstNode.click();
 }
 
 function renderSelectedWorkflow() {
+  closeNodeDetailDrawer();
   const workflow = getSelectedWorkflow();
   traceSummary.textContent = latestTraceData ? `${workflow.title}：已叠加本次问题的执行细节` : workflow.summary;
   renderWorkflowGraph(workflow);

@@ -2,6 +2,7 @@ import pytest
 
 from enterprise_rag_mvp.models import PolicyChunk, SearchResult
 from enterprise_rag_mvp.pgvector_store import _hybrid_term_groups
+from enterprise_rag_mvp.policy_rule_resolver import build_policy_lookup_spec
 from enterprise_rag_mvp.trace_pipeline import run_chat_trace
 
 
@@ -54,11 +55,13 @@ def test_hybrid_term_groups_prioritize_clause_terms_before_section_terms():
             "target_terms": ["弄虚作假", "弄虚作假行为", "虚假报销"],
             "target_section": "二类违规行为",
             "target_clause": "4. 弄虚作假行为",
+            "rule_search_terms": ["4.3虚假报销"],
         },
     )
 
     assert primary[:3] == ["弄虚作假", "弄虚作假行为", "虚假报销"]
     assert "4. 弄虚作假行为" in primary
+    assert "4.3虚假报销" in primary
     assert secondary == ["二类违规行为"]
     assert query_terms == ["弄虚作假行为是什么"]
 
@@ -137,6 +140,7 @@ def test_run_chat_trace_explains_query_rewrite_rerank_quality_and_observability(
     understanding = _step(response, "query_understanding")
     assert understanding["details"]["intent"] == "rule_lookup"
     assert understanding["details"]["policy_category_hint"] == "leave"
+    assert understanding["details"]["query_schema"]["answer_aspect"] == "definition"
     assert understanding["details"]["term_definitions"][0]["term"]
 
     rewrite = _step(response, "query_rewrite")
@@ -460,6 +464,75 @@ def test_disciplinary_action_scope_removes_next_numbered_section_prefix():
     assert "三类违规行为：予以书面或口头警告" not in response["answer"]
 
 
+def test_behavior_disciplinary_action_combines_classification_and_penalty_evidence():
+    classification_text = (
+        "（二）二类违规行为 4. 弄虚作假行为 "
+        "4.1向学校隐瞒或有意提交虚假的重大信息。"
+        "4.2在老师个人及学生各级考试各类评选活动中弄虚作假。"
+        "4.3虚假报销，例如报销未发生的费用或以虚假理由报销费用等。"
+        "4.4其他弄虚作假给学校造成严重不良影响或经济、声誉损失的行为。"
+        "5. 破坏学校管理秩序行为 5.1旷工少于三天。"
+    )
+    penalty_text = (
+        "五、违规行为相应处理 "
+        "1.1一类违规行为：处分生效当年年度绩效为低于期望，并解除劳动合同。"
+        "1.2二类违规行为：予以记过处分，自处分生效日起一年内不得调薪并取消当年年终奖激励资格，"
+        "影响学年年度绩效，取消评优评先、外出交流学习资格，情节严重的并处降薪处分。"
+        "1.3三类违规行为：予以书面或口头警告。"
+    )
+    broad_section_text = "（二）二类违规行为 二类违规行为：指比较严重的违规行为。1.师德师风相关行为。2.违反保密义务行为。"
+
+    class BehaviorPenaltyStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            return [
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-penalty", text=penalty_text), distance=0.05),
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-broad-section", text=broad_section_text), distance=0.08),
+                SearchResult(chunk=_discipline_chunk(chunk_id="discipline-false-reimbursement", text=classification_text), distance=0.12),
+            ]
+
+    response = run_chat_trace(
+        "虚假报销怎么处罚",
+        embedding_client=FakeEmbeddingClient(),
+        store=BehaviorPenaltyStore(),
+        top_k=3,
+    )
+
+    assert "事实：虚假报销" in response["answer"]
+    assert "属于二类违规行为中的弄虚作假行为（4.3虚假报销）" in response["answer"]
+    assert "处理结果：" in response["answer"]
+    assert "予以记过处分" in response["answer"]
+    assert "一年内不得调薪" in response["answer"]
+    assert "情节严重的并处降薪处分" in response["answer"]
+    assert "1.3三类违规行为" not in response["answer"]
+    assert response["results"][0]["chunk_id"] == "discipline-false-reimbursement"
+    assert response["results"][1]["chunk_id"] == "discipline-penalty"
+
+
+def test_behavior_classification_query_uses_structured_conclusion():
+    salary_text = (
+        "（二）二类违规行为 2. 违反保密义务行为 "
+        "2.1非因工作需要获取、使用、泄露、传播保密信息。"
+        "2.2其他违反数据安全规范等制度。"
+        "2.3打听、讨论员工工资、奖金、津贴补贴等个人待遇信息。"
+        "3. 侵犯学校权益行为 3.1未经授权发表言论。"
+    )
+
+    class SalaryStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            return [SearchResult(chunk=_discipline_chunk(chunk_id="discipline-salary", text=salary_text), distance=0.05)]
+
+    response = run_chat_trace(
+        "打听工资属于什么违规",
+        embedding_client=FakeEmbeddingClient(),
+        store=SalaryStore(),
+        top_k=3,
+    )
+
+    assert "事实：打听工资" in response["answer"]
+    assert "属于二类违规行为中的违反保密义务行为（2.3打听工资）" in response["answer"]
+    assert "3. 侵犯学校权益行为" not in response["answer"]
+
+
 
 def test_absenteeism_duration_query_returns_matching_penalty_rule():
     absenteeism_text = (
@@ -549,12 +622,17 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
     assert "二类违规行为" in filters["target_terms"]
     rewrite = _step(response, "query_rewrite")
     assert "连续旷工3个工作日以下" in rewrite["details"]["expanded_query"]
+    assert "事实：旷工 2 天" in response["answer"]
+    assert "规则匹配：2 < 3" in response["answer"]
     assert "属于二类违规行为" in response["answer"]
     assert "属于一类违规行为" not in response["answer"]
     assert "三类违规行为" not in response["answer"]
     assert "破坏学校管理秩序行为" in response["answer"]
     assert "4.2旷工少于三天" in response["answer"]
-    assert "扣除旷工期间工资，并给予记过处分" in response["answer"]
+    assert "处理结果：" in response["answer"]
+    assert "1. 扣除旷工期间工资" in response["answer"]
+    assert "2. 给予记过处分" in response["answer"]
+    assert "不确定性提醒" in response["answer"]
     assert "连续旷工3个工作日及以上" not in response["answer"]
     assert "辞退处分" not in response["answer"]
     assert "学生红黄灯行为处理办法" not in response["answer"]
@@ -564,6 +642,73 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
     assert "命中行为对象" in rerank["details"]["rerank_comparison"][0]["reason"]
     evidence = _step(response, "evidence_quality")
     assert evidence["details"]["target_evidence_filter"]["output_count"] == 2
+    evidence_types = {item["evidence_type"] for item in evidence["details"]["target_evidence_filter"]["evidence_classifications"]}
+    assert "direct_behavior_evidence" in evidence_types
+    understanding = _step(response, "query_understanding")
+    assert understanding["details"]["query_schema"]["target_object"]["key"] == "absenteeism"
+    assert understanding["details"]["rule_resolution"]["matched_rule"] == "连续旷工3个工作日以下"
+    assert understanding["details"]["rule_resolution"]["comparison"] == "2 < 3"
+
+
+
+def test_absenteeism_three_days_answer_does_not_reuse_under_three_classification():
+    penalty_text = (
+        "（三） 旷工 注：连续旷工3个工作日以下的，扣除旷工期间工资，并给予记过处分；"
+        "连续旷工3个工作日及以上的，或一年内累计两次及以上旷工的，扣除旷工期间工资，并给予辞退处分。"
+    )
+    under_three_classification = (
+        "（二）二类违规行为 4. 破坏学校管理秩序行为 4.2旷工少于三天。"
+    )
+
+    class AbsenteeismThreeDayStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            return [
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="worktime-absenteeism",
+                        doc_id="yungu-policy-11",
+                        block_id="chunk-0001",
+                        text=penalty_text,
+                        heading_path=["云谷人守则-工作时间及假期管理制度"],
+                        metadata={"source": "yungu_policy_system", "import_information_id": 11, "title": "云谷人守则-工作时间及假期管理制度"},
+                    ),
+                    distance=0.1,
+                ),
+                SearchResult(
+                    chunk=PolicyChunk(
+                        chunk_id="discipline-classification-under-three",
+                        doc_id="yungu-policy-16",
+                        block_id="chunk-0004",
+                        text=under_three_classification,
+                        heading_path=["云谷人守则-员工纪律制度"],
+                        metadata={"source": "yungu_policy_system", "import_information_id": 16, "title": "云谷人守则-员工纪律制度"},
+                    ),
+                    distance=0.2,
+                ),
+            ]
+
+    response = run_chat_trace(
+        "旷工三天会怎样",
+        embedding_client=FakeEmbeddingClient(),
+        store=AbsenteeismThreeDayStore(),
+        top_k=3,
+    )
+
+    assert "事实：旷工 3 天" in response["answer"]
+    assert "规则匹配：3 >= 3" in response["answer"]
+    assert "给予辞退处分" in response["answer"]
+    assert "4.2旷工少于三天" not in response["answer"]
+    assert "属于二类违规行为" not in response["answer"]
+
+
+def test_absenteeism_three_days_query_uses_rule_resolver_for_dismissal():
+    spec = build_policy_lookup_spec("旷工三天会怎样")
+
+    assert spec["target_behavior"] == "absenteeism"
+    assert spec["behavior_threshold"] == "continuous_absence_3_or_more_workdays"
+    assert spec["rule_resolution"]["matched_rule"] == "连续旷工3个工作日及以上"
+    assert spec["rule_resolution"]["comparison"] == "3 >= 3"
+    assert "辞退处分" in spec["expected_evidence"]
 
 
 

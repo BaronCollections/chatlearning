@@ -51,7 +51,11 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert "trace-tree-workbench" in app_js
     assert "trace-tree-canvas" in app_js
     assert "trace-tree-node" in app_js
-    assert "tree-detail-panel" in app_js
+    assert "tree-detail-panel" not in app_js
+    assert "node-detail-drawer" in app_js
+    assert "node-detail-backdrop" in app_js
+    assert "openNodeDetailDrawer" in app_js
+    assert "closeNodeDetailDrawer" in app_js
     assert "selectWorkflowNode" in app_js
     assert "renderTermList" in app_js
     assert "renderQualityChecks" in app_js
@@ -76,12 +80,16 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert ".inner-step-chip" in app_css
     assert ".common-question-list" in app_css
     assert ".inner-detail-list" in app_css
-    assert ".tree-detail-panel" in app_css
+    assert ".tree-detail-panel" not in app_css
+    assert ".node-detail-drawer" in app_css
+    assert ".node-detail-backdrop" in app_css
+    assert ".node-detail-drawer.open" in app_css
+    assert ".drawer-close-button" in app_css
     assert ".term-list" in app_css
     assert ".quality-check-list" in app_css
     assert ".rerank-comparison" in app_css
-    assert ".tree-detail-panel .kv" in app_css
-    assert ".tree-detail-panel .kv dd" in app_css
+    assert ".node-detail-drawer .kv" in app_css
+    assert ".node-detail-drawer .kv dd" in app_css
     assert "minmax(260px, 0.56fr)" in app_css
     assert "minmax(760px, 1.44fr)" in app_css
 

@@ -40,7 +40,7 @@ def _query_terms(query_text: str) -> list[str]:
 def _hybrid_term_groups(query_text: str, metadata_filters: dict | None) -> tuple[list[str], list[str], list[str]]:
     metadata_filters = metadata_filters or {}
     primary_terms: list[str] = []
-    for key in ["target_terms", "target_clause", "target_subclause"]:
+    for key in ["target_terms", "target_clause", "target_subclause", "rule_search_terms"]:
         primary_terms.extend(_terms_from_filter_value(metadata_filters.get(key)))
     secondary_terms = _terms_from_filter_value(metadata_filters.get("target_section"))
     query_terms = _query_terms(query_text)
