@@ -58,6 +58,8 @@ def test_run_chat_trace_returns_answer_steps_and_memory_results():
     assert "员工休假管理办法" in response["answer"]
     assert response["retrieval_mode"] == "in_memory_demo"
     assert response["results"][0]["chunk_id"] == "leave-annual-001"
+    assert response["results"][0]["citation"]["citation_id"] == "[1]"
+    assert "相关来源" in response["answer"]
 
     step_keys = [step["key"] for step in response["steps"]]
     assert step_keys == EXPECTED_STEP_KEYS
@@ -183,3 +185,58 @@ def test_run_chat_trace_uses_pgvector_store_when_available():
     retrieval = _step(response, "initial_retrieval")
     assert retrieval["details"]["framework"] == "PostgreSQL + pgvector"
     assert any(child["key"] == "pgvector_search" for child in retrieval["children"])
+
+
+def test_run_chat_trace_returns_policy_citations_with_links_for_multiple_hits():
+    class FakeStore:
+        def search(self, query_embedding: list[float], *, top_k: int):
+            first = PolicyChunk(
+                chunk_id="yungu-policy-2374-001",
+                doc_id="yungu-2374",
+                block_id="body-1",
+                text="员工年假规则以学校 HR 政策及知识库中的年休假条款为准。",
+                heading_path=["HR政策及知识库", "员工年休假条款"],
+                metadata={
+                    "source": "yungu_policy_system",
+                    "import_information_id": 2374,
+                    "title": "员工年休假条款",
+                    "policy_category_type_name": "HR政策及知识库",
+                    "publish_date": "2026-04-09 11:09:32",
+                },
+            )
+            second = PolicyChunk(
+                chunk_id="yungu-policy-2401-001",
+                doc_id="yungu-2401",
+                block_id="body-2",
+                text="新员工年假、适用对象和审批口径需要结合考勤制度一起判断。",
+                heading_path=["HR政策及知识库", "员工假勤补充说明"],
+                metadata={
+                    "source": "yungu_policy_system",
+                    "import_information_id": 2401,
+                    "title": "员工假勤补充说明",
+                    "policy_category_type_name": "HR政策及知识库",
+                    "publish_date": "2026-05-01 09:00:00",
+                },
+            )
+            return [SearchResult(chunk=first, distance=0.01), SearchResult(chunk=second, distance=0.02)]
+
+    response = run_chat_trace(
+        "员工年假规则是什么？",
+        embedding_client=FakeEmbeddingClient(),
+        store=FakeStore(),
+        top_k=2,
+    )
+
+    citations = [result["citation"] for result in response["results"]]
+    assert [citation["citation_id"] for citation in citations] == ["[1]", "[2]"]
+    assert citations[0]["title"] == "员工年休假条款"
+    assert "importInformationId=2374" in citations[0]["url"]
+    assert citations[0]["category"] == "HR政策及知识库"
+    assert "相关来源" in response["answer"]
+    assert "[1]" in response["answer"] and "[2]" in response["answer"]
+    assert "importInformationId=2374" in response["answer"]
+
+    evidence = _step(response, "evidence_quality")
+    first_block = evidence["details"]["context_blocks"][0]
+    assert first_block["citation"]["url"] == citations[0]["url"]
+    assert first_block["citation"]["import_information_id"] == 2374

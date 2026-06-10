@@ -4,6 +4,7 @@ import math
 import hashlib
 import time
 from typing import Any
+from urllib.parse import quote
 
 from enterprise_rag_mvp.models import SearchResult
 from enterprise_rag_mvp.samples import sample_policy_chunks
@@ -342,6 +343,59 @@ def _rerank_results(query: str, results: list[SearchResult]) -> tuple[list[Searc
     return reranked, comparison
 
 
+def _metadata_value(metadata: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = metadata.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _source_url(chunk: Any) -> str | None:
+    metadata = chunk.metadata or {}
+    explicit_url = _metadata_value(metadata, "url", "source_url", "detail_url")
+    if explicit_url:
+        return str(explicit_url)
+
+    import_information_id = _metadata_value(metadata, "import_information_id", "importInformationId")
+    if import_information_id is not None and metadata.get("source") == "yungu_policy_system":
+        return "https://work.yungu.org/home/policyDetail?" + f"importInformationId={quote(str(import_information_id))}"
+    return None
+
+
+def _citation_for_result(result: SearchResult, index: int) -> dict[str, Any]:
+    chunk = result.chunk
+    metadata = chunk.metadata or {}
+    heading_title = " > ".join(chunk.heading_path) if chunk.heading_path else chunk.doc_id
+    title = _metadata_value(metadata, "title", "cn_title", "cnTitle", "en_title", "enTitle") or heading_title
+    category = _metadata_value(
+        metadata,
+        "policy_category_type_name",
+        "policyCategoryTypeName",
+        "category_name",
+        "categoryName",
+    )
+    publish_date = _metadata_value(metadata, "publish_date", "publishDate")
+    import_information_id = _metadata_value(metadata, "import_information_id", "importInformationId")
+    page = metadata.get("page")
+    source = metadata.get("source", chunk.doc_id)
+    return {
+        "citation_id": f"[{index}]",
+        "title": str(title),
+        "source": source,
+        "url": _source_url(chunk),
+        "category": category,
+        "publish_date": publish_date,
+        "import_information_id": import_information_id,
+        "page": page,
+        "chunk_id": chunk.chunk_id,
+        "doc_id": chunk.doc_id,
+        "block_id": chunk.block_id,
+        "heading_path": chunk.heading_path,
+        "distance": round(result.distance, 6),
+    }
+
+
 def _quality_checks(results: list[SearchResult], rerank_comparison: list[dict[str, Any]]) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     top_score = rerank_comparison[0]["rerank_score"] if rerank_comparison else 0
     checks = [
@@ -353,7 +407,7 @@ def _quality_checks(results: list[SearchResult], rerank_comparison: list[dict[st
         {
             "name": "source_metadata",
             "status": "ok" if all(result.chunk.metadata.get("source") for result in results) else "warn",
-            "reason": "检查每个候选是否有 source/page/category 等可引用字段。",
+            "reason": "检查每个候选是否有 source/page/category/citation 等可引用字段。",
         },
         {
             "name": "freshness_conflict",
@@ -363,19 +417,21 @@ def _quality_checks(results: list[SearchResult], rerank_comparison: list[dict[st
         {
             "name": "context_assembly",
             "status": "ok" if results else "warn",
-            "reason": f"组装 {len(results)} 个 context block，并保留标题、来源和页码。",
+            "reason": f"组装 {len(results)} 个 context block，并保留标题、来源、页码和引用链接。",
         },
     ]
     context_blocks = []
-    for result in results:
+    for index, result in enumerate(results, start=1):
         chunk = result.chunk
+        citation = _citation_for_result(result, index)
         context_blocks.append(
             {
                 "chunk_id": chunk.chunk_id,
-                "title": " > ".join(chunk.heading_path) if chunk.heading_path else chunk.doc_id,
+                "title": citation["title"],
                 "text": chunk.text,
                 "source": chunk.metadata.get("source", chunk.doc_id),
                 "page": chunk.metadata.get("page"),
+                "citation": citation,
             }
         )
     return checks, context_blocks
@@ -421,7 +477,7 @@ def _memory_search(
     return ranked[:top_k]
 
 
-def _serialize_result(result: SearchResult) -> dict[str, Any]:
+def _serialize_result(result: SearchResult, index: int = 1) -> dict[str, Any]:
     chunk = result.chunk
     return {
         "chunk_id": chunk.chunk_id,
@@ -431,6 +487,7 @@ def _serialize_result(result: SearchResult) -> dict[str, Any]:
         "heading_path": chunk.heading_path,
         "metadata": chunk.metadata,
         "distance": round(result.distance, 6),
+        "citation": _citation_for_result(result, index),
     }
 
 
@@ -439,15 +496,24 @@ def _compose_answer(results: list[SearchResult], retrieval_mode: str) -> str:
         return "没有在当前制度样本中检索到足够相关的内容。"
 
     best = results[0].chunk
-    title = " > ".join(best.heading_path) if best.heading_path else best.doc_id
-    source = best.metadata.get("source", best.doc_id)
-    page = best.metadata.get("page")
-    location = f"{source} 第 {page} 页" if page is not None else source
+    best_citation = _citation_for_result(results[0], 1)
     mode_label = "pgvector" if retrieval_mode == "pgvector" else "内存向量检索 demo"
+    source_lines = []
+    for index, result in enumerate(results, start=1):
+        citation = _citation_for_result(result, index)
+        meta_parts = [part for part in [citation.get("category"), citation.get("publish_date")] if part]
+        meta = f"（{' / '.join(str(part) for part in meta_parts)}）" if meta_parts else ""
+        has_url = bool(citation.get("url"))
+        location = citation.get("url") or citation.get("source") or citation.get("doc_id")
+        location_label = "链接" if has_url else "位置"
+        source_lines.append(f"{citation['citation_id']}《{citation['title']}》{meta} {location_label}：{location}")
+
     return (
-        f"我在制度库中找到了 {len(results)} 条相关片段。最相关的是《{title}》：{best.text}\n\n"
-        f"来源：{location}\n"
-        f"检索方式：{mode_label}。"
+        f"我在制度库中返回了 {len(results)} 条候选片段。优先依据 {best_citation['citation_id']}"
+        f"《{best_citation['title']}》：{best.text}\n\n"
+        "相关来源：\n"
+        + "\n".join(source_lines)
+        + f"\n检索方式：{mode_label}。"
     )
 
 
@@ -932,7 +998,7 @@ def run_chat_trace(
                 details={
                     "tool": "PgVectorStore.search",
                     "result_count": len(results),
-                    "results_preview": [_serialize_result(result) for result in results],
+                    "results_preview": [_serialize_result(result, index) for index, result in enumerate(results, start=1)],
                 },
                 duration_ms=pgvector_duration,
             )
@@ -968,14 +1034,14 @@ def run_chat_trace(
                     "tool": "Python cosine distance over sample chunks",
                     "business_status": "demo fallback, not production storage",
                     "result_count": len(results),
-                    "results_preview": [_serialize_result(result) for result in results],
+                    "results_preview": [_serialize_result(result, index) for index, result in enumerate(results, start=1)],
                 },
                 duration_ms=fallback_duration,
             )
         )
 
     vector_details["result_count"] = len(results)
-    vector_details["results_preview"] = [_serialize_result(result) for result in results]
+    vector_details["results_preview"] = [_serialize_result(result, index) for index, result in enumerate(results, start=1)]
     steps.append(
         _step(
             key="initial_retrieval",
@@ -1159,6 +1225,6 @@ def run_chat_trace(
         "query": normalized_query,
         "answer": answer,
         "retrieval_mode": retrieval_mode,
-        "results": [_serialize_result(result) for result in final_results],
+        "results": [_serialize_result(result, index) for index, result in enumerate(final_results, start=1)],
         "steps": steps,
     }

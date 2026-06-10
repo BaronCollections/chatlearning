@@ -38,7 +38,8 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert "prefixInnerStepCatalog" in app_js
     assert "inner-step-list" in app_js
     assert "inner-step-chip" in app_js
-    assert "面试关注点" in app_js
+    assert "常见问题" in app_js
+    assert "面试关注点" not in app_js
     assert "个主阶段 /" in app_js
     assert "个细节点" in app_js
     assert "lc_tool_call" in app_js
@@ -73,7 +74,7 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert ".elbow-connector" in app_css
     assert ".inner-step-list" in app_css
     assert ".inner-step-chip" in app_css
-    assert ".interview-list" in app_css
+    assert ".common-question-list" in app_css
     assert ".inner-detail-list" in app_css
     assert ".tree-detail-panel" in app_css
     assert ".term-list" in app_css
@@ -81,25 +82,28 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert ".rerank-comparison" in app_css
     assert ".tree-detail-panel .kv" in app_css
     assert ".tree-detail-panel .kv dd" in app_css
-    assert "minmax(280px, 0.62fr)" in app_css
-    assert "minmax(720px, 1.38fr)" in app_css
+    assert "minmax(260px, 0.56fr)" in app_css
+    assert "minmax(760px, 1.44fr)" in app_css
 
     assert ".trace-3d-workbench" not in app_css
     assert ".detail-connector" not in app_css
     assert ".connector-line" not in app_css
 
 
-def test_interview_focus_points_include_brief_answers():
+def test_common_questions_include_brief_answers_and_are_deduplicated():
     app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
     app_css = (WEB_DIR / "app.css").read_text(encoding="utf-8")
 
-    assert "renderInterviewQuestions" in app_js
+    assert "renderCommonQuestions" in app_js
+    assert "dedupeQuestions" in app_js
+    assert "normalizeQuestionKey" in app_js
     assert "question:" in app_js
     assert "answer:" in app_js
     assert "interview-question" in app_js
     assert "interview-answer" in app_js
     assert ".interview-question" in app_css
     assert ".interview-answer" in app_css
+    assert ".common-question-list" in app_css
 
 
 
@@ -135,3 +139,18 @@ def test_workflow_explains_terms_and_required_vs_optional_steps():
     assert ".elbow-connector.connector-conditional::before" in app_css
     assert "dotted" in app_css
     assert ".requirement-note" in app_css
+
+
+def test_workflow_node_details_explain_possible_issues_and_solutions():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    app_css = (WEB_DIR / "app.css").read_text(encoding="utf-8")
+
+    assert "renderIssueSolutions" in app_js
+    assert "issue_solutions" in app_js
+    assert "问题与解决" in app_js
+    assert "issue:" in app_js
+    assert "solution:" in app_js
+    assert ".issue-solution-list" in app_css
+    assert ".issue-solution-item" in app_css
+    assert ".issue-title" in app_css
+    assert ".solution-text" in app_css

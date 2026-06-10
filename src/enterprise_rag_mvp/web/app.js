@@ -30,6 +30,53 @@ function appendMessage(role, text) {
   messages.scrollTop = messages.scrollHeight;
 }
 
+function renderAssistantResponse(bubble, data) {
+  bubble.textContent = "";
+  const answer = document.createElement("p");
+  answer.className = "answer-text";
+  answer.textContent = data.answer || "";
+  bubble.appendChild(answer);
+
+  const citations = (data.results || []).map((result) => result.citation).filter(Boolean);
+  if (citations.length === 0) return;
+
+  const section = document.createElement("section");
+  section.className = "answer-citations";
+  const title = document.createElement("strong");
+  title.textContent = "来源";
+  const list = document.createElement("ul");
+  citations.forEach((citation) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.className = "citation-label";
+    label.textContent = citation.citation_id || "来源";
+    item.appendChild(label);
+
+    if (citation.url) {
+      const link = document.createElement("a");
+      link.href = citation.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = citation.title || citation.source || citation.url;
+      item.appendChild(link);
+    } else {
+      const text = document.createElement("span");
+      text.textContent = citation.title || citation.source || "未命名来源";
+      item.appendChild(text);
+    }
+
+    const meta = [citation.category, citation.publish_date].filter(Boolean).join(" / ");
+    if (meta) {
+      const metaText = document.createElement("small");
+      metaText.textContent = meta;
+      item.appendChild(metaText);
+    }
+    list.appendChild(item);
+  });
+  section.append(title, list);
+  bubble.appendChild(section);
+}
+
 function formatValue(value) {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((item) => item == null || ["string", "number", "boolean"].includes(typeof item))) {
@@ -92,11 +139,34 @@ function interview(question, answer) {
   return { question: question, answer: answer };
 }
 
-function renderInterviewQuestions(values) {
-  if (!Array.isArray(values) || values.length === 0) return null;
-  const section = renderSection("面试关注点", "interview-list");
-  const list = document.createElement("ul");
+function issueSolution(issue, solution, impact) {
+  return { issue: issue, solution: solution, impact: impact };
+}
+
+function normalizeQuestionKey(value) {
+  const question = typeof value === "string" ? value : value?.question || value?.prompt || "";
+  return String(question).trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function dedupeQuestions(values) {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set();
+  const deduped = [];
   values.forEach((value) => {
+    const key = normalizeQuestionKey(value);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    deduped.push(value);
+  });
+  return deduped;
+}
+
+function renderCommonQuestions(values) {
+  const questions = dedupeQuestions(values);
+  if (questions.length === 0) return null;
+  const section = renderSection("常见问题", "common-question-list");
+  const list = document.createElement("ul");
+  questions.forEach((value) => {
     const item = document.createElement("li");
     const question = document.createElement("strong");
     question.className = "interview-question";
@@ -107,7 +177,7 @@ function renderInterviewQuestions(values) {
       question.textContent = value;
       answer.textContent = "回答时要结合输入、输出、失败分支和业务影响说明，避免只背概念。";
     } else {
-      question.textContent = value.question || value.prompt || "面试问题";
+      question.textContent = value.question || value.prompt || "常见问题";
       answer.textContent = value.answer || value.summary || "需要说明工程取舍、边界条件和真实业务中的验证方式。";
     }
 
@@ -115,6 +185,38 @@ function renderInterviewQuestions(values) {
     list.appendChild(item);
   });
   section.appendChild(list);
+  return section;
+}
+
+function renderIssueSolutions(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const section = renderSection("问题与解决", "issue-solution-list");
+  values.forEach((value) => {
+    const row = document.createElement("article");
+    row.className = "issue-solution-item";
+    const issue = document.createElement("strong");
+    issue.className = "issue-title";
+    const solution = document.createElement("p");
+    solution.className = "solution-text";
+
+    if (typeof value === "string") {
+      issue.textContent = value;
+      solution.textContent = "先定位 trace 中的输入、输出、异常和下游依赖，再按业务风险选择重试、降级、拒答或人工确认。";
+    } else {
+      issue.textContent = value.issue || value.title || "可能问题";
+      solution.textContent = value.solution || value.recommendation || "推荐用可观测 trace、参数校验、质量阈值和回归样本定位并修复。";
+      if (value.impact) {
+        const impact = document.createElement("span");
+        impact.className = "issue-impact";
+        impact.textContent = `影响：${value.impact}`;
+        row.appendChild(impact);
+      }
+    }
+
+    row.prepend(issue);
+    row.appendChild(solution);
+    section.appendChild(row);
+  });
   return section;
 }
 
@@ -262,6 +364,7 @@ function renderDetails(details) {
     "options",
     "inner_steps",
     "interview_questions",
+    "issue_solutions",
     "requirement",
     "requirement_reason",
   ];
@@ -286,8 +389,11 @@ function renderDetails(details) {
   const innerSteps = renderBulletList("细节点", "inner-detail-list", details?.inner_steps);
   if (innerSteps) wrapper.appendChild(innerSteps);
 
-  const interviewQuestions = renderInterviewQuestions(details?.interview_questions);
-  if (interviewQuestions) wrapper.appendChild(interviewQuestions);
+  const commonQuestions = renderCommonQuestions(details?.interview_questions);
+  if (commonQuestions) wrapper.appendChild(commonQuestions);
+
+  const issueSolutions = renderIssueSolutions(details?.issue_solutions);
+  if (issueSolutions) wrapper.appendChild(issueSolutions);
 
   const qualityChecks = renderQualityChecks(details?.quality_checks);
   if (qualityChecks) wrapper.appendChild(qualityChecks);
@@ -397,6 +503,28 @@ function enrichTermDefinitions(details = {}, item = {}) {
   return terms;
 }
 
+function defaultIssueSolutions(item, requirement) {
+  const title = item?.title || "当前节点";
+  const requirementLabel = requirementLabels[normalizeRequirement(requirement)] || "按业务选择";
+  return [
+    issueSolution(
+      `${title} 的输入不完整或边界条件没处理`,
+      "在节点入口做 schema 校验、空值/超长/权限状态判断，并把失败原因写入 trace，避免错误继续传给下游。",
+      "会导致后续检索、重排或回答阶段基于错误状态继续执行。",
+    ),
+    issueSolution(
+      `${title} 产出的结果无法解释或无法回放`,
+      "记录输入、输出、工具版本、耗时、状态和关键中间值；生产环境再接 Langfuse 或同类观测平台做 trace/span 回放。",
+      "问题发生后只能猜，无法定位是数据、模型、参数还是业务规则造成。",
+    ),
+    issueSolution(
+      `${title} 是否必须执行没有被说明清楚`,
+      `在流程图上标记为${requirementLabel}，并写明跳过、降级或启用该步骤的业务条件。`,
+      "学习者和面试官会误以为所有节点都是线性必经，真实系统的成本和延迟也会失控。",
+    ),
+  ];
+}
+
 function withLearningDetails(details, item, requirement, requirementReason) {
   const normalizedRequirement = normalizeRequirement(requirement);
   const reason = requirementReason || details.requirement_reason || requirementDescriptions[normalizedRequirement];
@@ -405,6 +533,9 @@ function withLearningDetails(details, item, requirement, requirementReason) {
     requirement: requirementLabels[normalizedRequirement],
     requirement_reason: reason,
     term_definitions: enrichTermDefinitions(details, item),
+    issue_solutions: Array.isArray(details.issue_solutions) && details.issue_solutions.length > 0
+      ? details.issue_solutions
+      : defaultIssueSolutions(item, normalizedRequirement),
   };
 }
 
@@ -594,6 +725,7 @@ function nodeDefaults(id, title) {
         interview(`${title} 在真实业务里失败时，应该看哪些日志或 trace？`, "先看 trace_id 串联的输入输出、耗时、异常、模型版本、检索候选和下游返回，确认问题发生在哪个边界。"),
         interview(`${title} 的输入、输出和边界条件分别是什么？`, "输入输出要有 schema，边界条件要覆盖空值、超长、权限不足、无召回、外部服务超时和部分失败。"),
       ],
+      issue_solutions: defaultIssueSolutions({ title: title }, "required"),
     },
   };
 }
@@ -654,6 +786,7 @@ function normalizeInnerStep(parent, innerStep, index) {
         ...(innerStep.details?.interview_questions || []),
         interview(`${parent.title} 里的这个细节点为什么不能省略？`, "它通常承担可观测、质量控制或业务约束职责；省略后短期能跑通，但问题发生时难以解释和修复。"),
       ],
+      issue_solutions: innerStep.details?.issue_solutions || defaultIssueSolutions({ title: innerStep.title || parent.title }, parent.requirement),
     },
   };
 }
@@ -1227,7 +1360,7 @@ async function ask(message) {
 
   const data = await response.json();
   latestTraceData = data;
-  pending.textContent = data.answer;
+  renderAssistantResponse(pending, data);
   workflowSelect.value = "rag-core";
   renderSelectedWorkflow();
 }
