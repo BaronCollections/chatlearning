@@ -88,11 +88,14 @@ def render_company_category_summary(summary: CompanyCategoryImportSummary, *, dr
         )
         for document in report.documents:
             reason = f" reason={document.reason}" if document.reason else ""
+            parse_info = f" parse={document.parse_status}" if document.parse_status else ""
+            warning_info = f" parse_warnings={document.parse_warning_count}" if document.parse_warning_count else ""
+            attachment_info = f" attachments={document.attachment_count}" if document.attachment_count else ""
             lines.append(
                 f"  - id={document.import_information_id} "
                 f"status={document.status} "
                 f"chunks={document.chunk_count} "
-                f"title={document.title}{reason}"
+                f"title={document.title}{parse_info}{warning_info}{attachment_info}{reason}"
             )
     return "\n".join(lines)
 
@@ -121,6 +124,7 @@ def ingest_company(args: argparse.Namespace) -> None:
                 embedding_batch_size=args.embedding_batch_size,
                 keyword=args.keyword,
                 dry_run=args.dry_run,
+                parse_attachments=args.parse_attachments,
             )
             print(render_company_category_summary(summary, dry_run=args.dry_run))
             return
@@ -139,6 +143,7 @@ def ingest_company(args: argparse.Namespace) -> None:
             embedding_batch_size=args.embedding_batch_size,
             keyword=args.keyword,
             dry_run=args.dry_run,
+            parse_attachments=args.parse_attachments,
         )
     finally:
         company_client.close()
@@ -189,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     company_parser.add_argument("--embedding-batch-size", type=int, default=16)
     company_parser.add_argument("--timeout", type=float, default=30.0)
     company_parser.add_argument("--dry-run", action="store_true", help="Fetch and chunk, but do not call embedding or write pgvector")
+    company_parser.add_argument("--parse-attachments", action="store_true", help="Explicitly download and parse fileList attachments. Disabled by default for safety.")
     company_parser.set_defaults(func=ingest_company)
 
     search_parser = subparsers.add_parser("search", help="Search sample policy chunks")

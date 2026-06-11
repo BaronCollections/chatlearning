@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import html
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from html.parser import HTMLParser
 from typing import Any, Protocol
 
 import httpx
 
+from enterprise_rag_mvp.document_parsing import DocumentParserRouter, DocumentSource, clean_html_to_text, normalize_whitespace, parsed_document_text
 from enterprise_rag_mvp.models import PolicyChunk
 
 DEFAULT_COMPANY_BASE_URL = "https://example.com"
@@ -50,6 +50,9 @@ class CompanyProcessedDocument:
     status: str
     chunk_count: int = 0
     reason: str | None = None
+    parse_status: str | None = None
+    parse_warning_count: int = 0
+    attachment_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -87,73 +90,6 @@ class EmbeddingLike(Protocol):
 class StoreLike(Protocol):
     def upsert_chunks(self, chunks: list[PolicyChunk], embeddings: list[list[float]]) -> None:
         ...
-
-
-class _HTMLTextExtractor(HTMLParser):
-    _BLOCK_TAGS = {
-        "address",
-        "article",
-        "aside",
-        "blockquote",
-        "br",
-        "div",
-        "footer",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "header",
-        "li",
-        "p",
-        "section",
-        "table",
-        "td",
-        "th",
-        "tr",
-        "ul",
-        "ol",
-    }
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._parts: list[str] = []
-        self._ignored_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"script", "style"}:
-            self._ignored_depth += 1
-            return
-        if self._ignored_depth == 0 and tag in self._BLOCK_TAGS:
-            self._parts.append(" ")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style"} and self._ignored_depth > 0:
-            self._ignored_depth -= 1
-            return
-        if self._ignored_depth == 0 and tag in self._BLOCK_TAGS:
-            self._parts.append(" ")
-
-    def handle_data(self, data: str) -> None:
-        if self._ignored_depth == 0:
-            self._parts.append(data)
-
-    def text(self) -> str:
-        return "".join(self._parts)
-
-
-def normalize_whitespace(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def clean_html_to_text(raw_html: str | None) -> str:
-    if not raw_html:
-        return ""
-    extractor = _HTMLTextExtractor()
-    extractor.feed(str(raw_html))
-    extractor.close()
-    return normalize_whitespace(html.unescape(extractor.text()).replace("\xa0", " "))
 
 
 def chunk_text(text: str, *, max_chars: int = 1200, overlap_chars: int = 150) -> list[str]:
@@ -296,11 +232,124 @@ def _category_from_raw(raw: dict[str, Any]) -> CompanyCategory | None:
     return CompanyCategory(category_id=category_id, name=name, ename=ename or None)
 
 
+def _attachment_name(raw: dict[str, Any], index: int) -> str:
+    return _first_non_empty(
+        raw.get("name"),
+        raw.get("fileName"),
+        raw.get("filename"),
+        raw.get("title"),
+        fallback=f"attachment-{index}",
+    )
+
+
+def _attachment_url(raw: dict[str, Any]) -> str | None:
+    value = _first_non_empty(raw.get("url"), raw.get("fileUrl"), raw.get("downloadUrl"), raw.get("path"), raw.get("filePath"))
+    return value or None
+
+
+def _attachment_content_type(raw: dict[str, Any]) -> str | None:
+    value = _first_non_empty(raw.get("contentType"), raw.get("mimeType"), raw.get("type"))
+    return value or None
+
+
+def _parse_attachment_chunks(
+    *,
+    file_list: list[Any],
+    parent_doc_id: str,
+    parent_title: str,
+    parent_heading_path: list[str],
+    parent_source_url: str,
+    parser_router: DocumentParserRouter,
+    attachment_fetcher: Callable[[dict[str, Any]], bytes] | None,
+    max_chars: int,
+    overlap_chars: int,
+) -> tuple[list[PolicyChunk], dict[str, Any]]:
+    if not file_list:
+        return [], {"status": "none", "parsed_count": 0, "warning_count": 0}
+    if attachment_fetcher is None:
+        return [], {"status": "fetcher_not_configured", "parsed_count": 0, "warning_count": len(file_list)}
+
+    chunks: list[PolicyChunk] = []
+    parsed_count = 0
+    warning_count = 0
+    failed_count = 0
+    for index, raw in enumerate(file_list, start=1):
+        if not isinstance(raw, dict):
+            failed_count += 1
+            warning_count += 1
+            continue
+        attachment_name = _attachment_name(raw, index)
+        attachment_url = _attachment_url(raw)
+        try:
+            content = attachment_fetcher(raw)
+        except Exception:
+            failed_count += 1
+            warning_count += 1
+            continue
+        parsed = parser_router.parse(
+            DocumentSource(
+                source_id=f"{parent_doc_id}-attachment-{index}",
+                source_name=attachment_name,
+                file_name=attachment_name,
+                content_type=_attachment_content_type(raw),
+                content=content,
+                source_url=attachment_url or parent_source_url,
+                metadata={"parent_doc_id": parent_doc_id, "attachment_index": index},
+            )
+        )
+        warning_count += len(parsed.quality.warnings)
+        attachment_text = parsed_document_text(parsed)
+        if not attachment_text:
+            failed_count += 1
+            continue
+        parsed_count += 1
+        attachment_doc_id = f"{parent_doc_id}-attachment-{index}"
+        for chunk_index, chunk in enumerate(chunk_text(attachment_text, max_chars=max_chars, overlap_chars=overlap_chars), start=1):
+            chunks.append(
+                PolicyChunk(
+                    chunk_id=f"{attachment_doc_id}-chunk-{chunk_index:04d}",
+                    doc_id=attachment_doc_id,
+                    block_id=f"attachment-{index}-chunk-{chunk_index:04d}",
+                    text=chunk,
+                    heading_path=[*parent_heading_path, attachment_name] or [parent_title, attachment_name],
+                    metadata={
+                        "source": "company_policy_attachment",
+                        "source_url": attachment_url or parent_source_url,
+                        "parent_doc_id": parent_doc_id,
+                        "attachment_index": index,
+                        "attachment_name": attachment_name,
+                        "title": parent_title,
+                        "parser_name": parsed.quality.parser_name,
+                        "parser_version": parsed.quality.parser_version,
+                        "parse_status": parsed.quality.status,
+                        "parse_element_count": parsed.quality.element_count,
+                        "parse_warning_count": len(parsed.quality.warnings),
+                        "parse_table_count": parsed.quality.table_count,
+                        "parse_image_ocr_count": parsed.quality.image_ocr_count,
+                        "chunk_type": "attachment_fixed_window",
+                    },
+                )
+            )
+
+    if parsed_count == len(file_list):
+        status = "success"
+    elif parsed_count > 0:
+        status = "partial"
+    elif failed_count > 0:
+        status = "failed"
+    else:
+        status = "not_fetched"
+    return chunks, {"status": status, "parsed_count": parsed_count, "warning_count": warning_count}
+
+
 def detail_to_policy_chunks(
     detail: dict[str, Any],
     *,
     max_chars: int = 1200,
     overlap_chars: int = 150,
+    parse_attachments: bool = False,
+    attachment_fetcher: Callable[[dict[str, Any]], bytes] | None = None,
+    parser_router: DocumentParserRouter | None = None,
 ) -> list[PolicyChunk]:
     import_id = _metadata_value(detail, "importInformationId", "id")
     if import_id is None:
@@ -308,14 +357,42 @@ def detail_to_policy_chunks(
 
     title = _first_non_empty(detail.get("cnTitle"), detail.get("title"), detail.get("enTitle"), fallback=f"policy-{import_id}")
     category_name = _first_non_empty(detail.get("policyCategoryTypeName"), detail.get("categoryTypeName"), detail.get("categoryName"))
-    text = clean_html_to_text(detail.get("body"))
-    if not text:
-        return []
-
     doc_id = f"company-policy-{import_id}"
     heading_path = [value for value in [category_name, title] if value]
     file_list = detail.get("fileList") or []
+    file_count = len(file_list) if isinstance(file_list, list) else 0
     source_url = f"https://example.com/policyDetail/{import_id}"
+    effective_parser_router = parser_router or DocumentParserRouter()
+    parsed_body = effective_parser_router.parse(
+        DocumentSource(
+            source_id=f"{doc_id}-body",
+            source_name=title,
+            file_name=f"{import_id}.html",
+            content_type="text/html",
+            text=str(detail.get("body") or ""),
+            source_url=source_url,
+            metadata={"import_information_id": import_id},
+        )
+    )
+    text = parsed_document_text(parsed_body)
+    if not text:
+        return []
+
+    attachment_chunks, attachment_summary = _parse_attachment_chunks(
+        file_list=file_list if parse_attachments and isinstance(file_list, list) else [],
+        parent_doc_id=doc_id,
+        parent_title=title,
+        parent_heading_path=heading_path,
+        parent_source_url=source_url,
+        parser_router=effective_parser_router,
+        attachment_fetcher=attachment_fetcher,
+        max_chars=max_chars,
+        overlap_chars=overlap_chars,
+    )
+    if file_count and not parse_attachments:
+        attachment_summary = {"status": "not_fetched", "parsed_count": 0, "warning_count": 0}
+    attachment_parse_status = attachment_summary["status"]
+    parse_warnings = parsed_body.quality.warnings
     base_metadata = {
         "source": "company_policy_system",
         "source_url": source_url,
@@ -328,7 +405,18 @@ def detail_to_policy_chunks(
         "policy_category_type_name": category_name or None,
         "policy_system_type": detail.get("policySystemType"),
         "create_user_name": detail.get("createUserName"),
-        "file_count": len(file_list) if isinstance(file_list, list) else 0,
+        "file_count": file_count,
+        "attachment_parse_status": attachment_parse_status,
+        "attachment_parsed_count": attachment_summary["parsed_count"],
+        "attachment_parse_warning_count": attachment_summary["warning_count"],
+        "parser_name": parsed_body.quality.parser_name,
+        "parser_version": parsed_body.quality.parser_version,
+        "parse_status": parsed_body.quality.status,
+        "parse_element_count": parsed_body.quality.element_count,
+        "parse_warning_count": len(parse_warnings),
+        "parse_table_count": parsed_body.quality.table_count,
+        "parse_image_ocr_count": parsed_body.quality.image_ocr_count,
+        "parse_warnings": parse_warnings or None,
     }
     base_metadata = {key: value for key, value in base_metadata.items() if value is not None}
 
@@ -351,13 +439,13 @@ def detail_to_policy_chunks(
                     metadata=metadata,
                 )
             )
-        return chunks
+        return chunks + attachment_chunks
 
     chunks = chunk_text(text, max_chars=max_chars, overlap_chars=overlap_chars)
     if not chunks:
         return []
 
-    return [
+    body_chunks = [
         PolicyChunk(
             chunk_id=f"{doc_id}-chunk-{index:04d}",
             doc_id=doc_id,
@@ -368,6 +456,7 @@ def detail_to_policy_chunks(
         )
         for index, chunk in enumerate(chunks, start=1)
     ]
+    return body_chunks + attachment_chunks
 
 
 class CompanyPolicyClient:
@@ -565,6 +654,7 @@ def ingest_company_policy_report(
     embedding_batch_size: int = 16,
     keyword: str = "",
     dry_run: bool = False,
+    parse_attachments: bool = False,
     continue_on_error: bool = True,
 ) -> CompanyPolicyIngestReport:
     if page_size <= 0:
@@ -637,7 +727,13 @@ def ingest_company_policy_report(
             detail: dict[str, Any] | None = None
             try:
                 detail = _with_category_metadata(client.fetch_detail(import_id), effective_category)
-                chunks = detail_to_policy_chunks(detail, max_chars=chunk_max_chars, overlap_chars=chunk_overlap_chars)
+                chunks = detail_to_policy_chunks(
+                    detail,
+                    max_chars=chunk_max_chars,
+                    overlap_chars=chunk_overlap_chars,
+                    parse_attachments=parse_attachments,
+                    attachment_fetcher=client.fetch_attachment_bytes if parse_attachments and hasattr(client, "fetch_attachment_bytes") else None,
+                )
                 title = _title_from_row_or_detail(row, detail, import_id)
                 if not chunks:
                     documents_skipped += 1
@@ -653,7 +749,18 @@ def ingest_company_policy_report(
                         chunks_stored += len(batch)
 
                 documents_imported += 1
-                documents.append(CompanyProcessedDocument(import_id, title, "imported", chunk_count=len(chunks)))
+                first_metadata = chunks[0].metadata if chunks else {}
+                documents.append(
+                    CompanyProcessedDocument(
+                        import_id,
+                        title,
+                        "imported",
+                        chunk_count=len(chunks),
+                        parse_status=first_metadata.get("parse_status"),
+                        parse_warning_count=int(first_metadata.get("parse_warning_count") or 0),
+                        attachment_count=int(first_metadata.get("file_count") or 0),
+                    )
+                )
             except Exception as exc:
                 if not continue_on_error:
                     raise
@@ -694,6 +801,7 @@ def ingest_company_policies(
     embedding_batch_size: int = 16,
     keyword: str = "",
     dry_run: bool = False,
+    parse_attachments: bool = False,
 ) -> CompanyImportStats:
     report = ingest_company_policy_report(
         client=client,
@@ -709,6 +817,7 @@ def ingest_company_policies(
         embedding_batch_size=embedding_batch_size,
         keyword=keyword,
         dry_run=dry_run,
+        parse_attachments=parse_attachments,
     )
     return report.stats
 
@@ -728,6 +837,7 @@ def ingest_company_categories(
     embedding_batch_size: int = 16,
     keyword: str = "",
     dry_run: bool = False,
+    parse_attachments: bool = False,
 ) -> CompanyCategoryImportSummary:
     if page_size <= 0:
         raise ValueError("page_size must be positive")
@@ -752,6 +862,7 @@ def ingest_company_categories(
             embedding_batch_size=embedding_batch_size,
             keyword=keyword,
             dry_run=dry_run,
+            parse_attachments=parse_attachments,
         )
         for category in effective_categories
     ]

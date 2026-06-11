@@ -13,6 +13,7 @@ from enterprise_rag_mvp.company_importer import (
     detail_to_policy_chunks,
     ingest_company_categories,
     ingest_company_policies,
+    ingest_company_policy_report,
 )
 
 
@@ -66,6 +67,10 @@ def test_detail_to_policy_chunks_maps_metadata_and_skips_empty_body():
     assert chunks[0].metadata["source"] == "company_policy_system"
     assert chunks[0].metadata["import_information_id"] == 192
     assert chunks[0].metadata["file_count"] == 1
+    assert chunks[0].metadata["parser_name"] == "html_builtin"
+    assert chunks[0].metadata["parse_status"] == "success"
+    assert chunks[0].metadata["parse_element_count"] >= 1
+    assert chunks[0].metadata["attachment_parse_status"] == "not_fetched"
 
     assert detail_to_policy_chunks({"importInformationId": 1, "cnTitle": "空", "body": "<p> </p>"}) == []
 
@@ -335,3 +340,57 @@ def test_company_base_url_uses_arg_env_then_placeholder(monkeypatch):
 
     monkeypatch.delenv("COMPANY_POLICY_BASE_URL")
     assert _company_base_url(env_args) == "https://example.com"
+
+
+def test_processed_document_records_parse_quality_in_report():
+    embedding_client = FakeEmbeddingClient()
+    store = FakeStore()
+
+    report = ingest_company_policy_report(
+        client=FakeCompanyClient(),
+        embedding_client=embedding_client,
+        store=store,
+        policy_type=2,
+        page_size=20,
+        max_docs=1,
+        chunk_max_chars=80,
+        chunk_overlap_chars=5,
+        dry_run=True,
+    )
+
+    assert report.documents[0].parse_status == "success"
+    assert report.documents[0].parse_warning_count == 0
+    assert report.documents[0].attachment_count == 0
+
+
+def test_detail_to_policy_chunks_can_parse_text_attachment_when_enabled():
+    detail = {
+        "importInformationId": 88,
+        "cnTitle": "附件制度",
+        "policyCategoryTypeName": "HR",
+        "body": "<p>正文条款。</p>",
+        "fileList": [
+            {"name": "补充说明.txt", "url": "https://files.example.test/policy-88.txt", "contentType": "text/plain"}
+        ],
+    }
+
+    def fetch_attachment(raw_attachment):
+        assert raw_attachment["name"] == "补充说明.txt"
+        return "附件里的补充条款。".encode("utf-8")
+
+    chunks = detail_to_policy_chunks(
+        detail,
+        max_chars=80,
+        overlap_chars=5,
+        parse_attachments=True,
+        attachment_fetcher=fetch_attachment,
+    )
+
+    assert any(chunk.metadata.get("source") == "company_policy_attachment" for chunk in chunks)
+    attachment_chunk = next(chunk for chunk in chunks if chunk.metadata.get("source") == "company_policy_attachment")
+    assert attachment_chunk.text == "附件里的补充条款。"
+    assert attachment_chunk.metadata["attachment_name"] == "补充说明.txt"
+    assert attachment_chunk.metadata["parser_name"] == "text_builtin"
+    body_chunk = next(chunk for chunk in chunks if chunk.metadata.get("source") == "company_policy_system")
+    assert body_chunk.metadata["attachment_parse_status"] == "success"
+    assert body_chunk.metadata["attachment_parsed_count"] == 1
