@@ -1,5 +1,5 @@
 from enterprise_rag_mvp.models import PolicyChunk, SearchResult
-from enterprise_rag_mvp.embedding_client import EmbeddingClient
+from enterprise_rag_mvp.embedding_client import DeterministicEmbeddingClient, EmbeddingClient
 from enterprise_rag_mvp.cli import _schema_path
 from enterprise_rag_mvp.pgvector_store import build_vector_literal
 from enterprise_rag_mvp.render import render_results
@@ -103,5 +103,20 @@ def test_sample_policy_chunks_cover_absenteeism_rule_demo():
 def test_sample_policy_chunks_include_demo_source_urls_for_policy_links():
     chunks = {chunk.chunk_id: chunk for chunk in sample_policy_chunks()}
 
-    assert chunks["attendance-absence-penalty-001"].metadata["source_url"] == "https://work.yungu.org/policyDetail/11"
-    assert chunks["discipline-absence-classification-001"].metadata["source_url"] == "https://work.yungu.org/policyDetail/16"
+    assert chunks["attendance-absence-penalty-001"].metadata["source_url"] == "https://example.com/policyDetail/11"
+    assert chunks["discipline-absence-classification-001"].metadata["source_url"] == "https://example.com/policyDetail/16"
+
+
+def test_deterministic_embedding_client_supports_offline_demo_retrieval():
+    client = DeterministicEmbeddingClient()
+
+    query_vector = client.embed(["我旷工两天会有什么处罚"], input_type="query")[0]
+    doc_vectors = client.embed([chunk.text for chunk in sample_policy_chunks()], input_type="document")
+    distances = [sum((left - right) ** 2 for left, right in zip(query_vector, doc_vector)) for doc_vector in doc_vectors]
+    best_chunk = sample_policy_chunks()[distances.index(min(distances))]
+
+    assert len(query_vector) == client.dimension
+    assert best_chunk.chunk_id in {"attendance-absence-penalty-001", "discipline-absence-classification-001"}
+    token_info = client.tokenize("员工年假")
+    assert token_info["tokens"] == ["员", "工", "年", "假"]
+    assert token_info["tokenizer"] == "local-deterministic-char-tokenizer"

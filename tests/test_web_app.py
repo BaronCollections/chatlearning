@@ -2,7 +2,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from enterprise_rag_mvp.web_app import create_app
+from enterprise_rag_mvp.web_app import _default_runner, create_app
 
 
 def test_home_page_serves_trace_chat_shell():
@@ -13,6 +13,17 @@ def test_home_page_serves_trace_chat_shell():
     assert response.status_code == 200
     assert "RAG Trace Chat" in response.text
     assert "messageInput" in response.text
+
+
+def test_docs_page_serves_standalone_documentation_shell():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
+
+    response = client.get("/docs")
+
+    assert response.status_code == 200
+    assert "ChatLearning Docs" in response.text
+    assert "docs-page-shell" in response.text
+    assert "docs.js" in response.text
 
 
 def test_chat_endpoint_returns_trace_response():
@@ -91,9 +102,9 @@ def test_feedback_endpoint_stores_bad_case_without_raw_trace(tmp_path):
                     "chunk_id": "policy-16:section-2",
                     "text": "不应该保存完整制度正文",
                     "citation": {
-                        "title": "云谷人守则-员工纪律制度",
-                        "url": "https://work.yungu.org/policyDetail/16",
-                        "category": "云谷人守则",
+                        "title": "***公司人守则-员工纪律制度",
+                        "url": "https://example.com/policyDetail/16",
+                        "category": "***公司人守则",
                     },
                 }
             ],
@@ -105,5 +116,17 @@ def test_feedback_endpoint_stores_bad_case_without_raw_trace(tmp_path):
     assert response.json()["raw_trace_stored"] is False
     rows = [json.loads(line) for line in bad_case_path.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["feedback_type"] == "missing_clause"
-    assert rows[0]["citations"][0]["title"] == "云谷人守则-员工纪律制度"
+    assert rows[0]["citations"][0]["title"] == "***公司人守则-员工纪律制度"
     assert "不应该保存完整制度正文" not in bad_case_path.read_text(encoding="utf-8")
+
+
+def test_default_runner_supports_explicit_local_embedding_provider(monkeypatch):
+    monkeypatch.setenv("RAG_DISABLE_PGVECTOR", "true")
+    monkeypatch.setenv("RAG_EMBEDDING_PROVIDER", "local")
+
+    response = _default_runner("我旷工两天会有什么处罚", 2)
+
+    assert response["retrieval_mode"] == "in_memory_demo"
+    assert "扣除旷工期间工资" in response["answer"]
+    assert "记过处分" in response["answer"]
+    assert any(result["citation"].get("url") == "https://example.com/policyDetail/11" for result in response["results"])

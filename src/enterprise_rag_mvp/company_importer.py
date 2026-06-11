@@ -11,16 +11,16 @@ import httpx
 
 from enterprise_rag_mvp.models import PolicyChunk
 
-DEFAULT_YUNGU_BASE_URL = "https://work.yungu.org"
+DEFAULT_COMPANY_BASE_URL = "https://example.com"
 DEFAULT_POLICY_TYPE = 2
 
 
-class YunguApiError(RuntimeError):
+class CompanyApiError(RuntimeError):
     pass
 
 
 @dataclass(frozen=True)
-class YunguInformationPage:
+class CompanyInformationPage:
     rows: list[dict[str, Any]]
     total: int
     page_num: int
@@ -28,14 +28,14 @@ class YunguInformationPage:
 
 
 @dataclass(frozen=True)
-class YunguCategory:
+class CompanyCategory:
     category_id: int
     name: str
     ename: str | None = None
 
 
 @dataclass(frozen=True)
-class YunguImportStats:
+class CompanyImportStats:
     documents_seen: int = 0
     documents_imported: int = 0
     documents_skipped: int = 0
@@ -44,7 +44,7 @@ class YunguImportStats:
 
 
 @dataclass(frozen=True)
-class YunguProcessedDocument:
+class CompanyProcessedDocument:
     import_information_id: Any
     title: str
     status: str
@@ -53,24 +53,24 @@ class YunguProcessedDocument:
 
 
 @dataclass(frozen=True)
-class YunguPolicyIngestReport:
-    category: YunguCategory | None
+class CompanyPolicyIngestReport:
+    category: CompanyCategory | None
     total_available: int
-    stats: YunguImportStats
-    documents: list[YunguProcessedDocument]
+    stats: CompanyImportStats
+    documents: list[CompanyProcessedDocument]
 
 
 @dataclass(frozen=True)
-class YunguCategoryImportSummary:
-    categories: list[YunguPolicyIngestReport]
+class CompanyCategoryImportSummary:
+    categories: list[CompanyPolicyIngestReport]
 
     @property
     def category_count(self) -> int:
         return len(self.categories)
 
     @property
-    def stats(self) -> YunguImportStats:
-        return YunguImportStats(
+    def stats(self) -> CompanyImportStats:
+        return CompanyImportStats(
             documents_seen=sum(report.stats.documents_seen for report in self.categories),
             documents_imported=sum(report.stats.documents_imported for report in self.categories),
             documents_skipped=sum(report.stats.documents_skipped for report in self.categories),
@@ -287,13 +287,13 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
-def _category_from_raw(raw: dict[str, Any]) -> YunguCategory | None:
+def _category_from_raw(raw: dict[str, Any]) -> CompanyCategory | None:
     category_id = _int_or_none(_metadata_value(raw, "categoryTypeId", "policyCategoryType", "categoryId", "id"))
     if category_id is None:
         return None
     name = _first_non_empty(raw.get("categoryName"), raw.get("name"), fallback=f"category-{category_id}")
     ename = _first_non_empty(raw.get("categoryEname"), raw.get("ename"), raw.get("englishName"))
-    return YunguCategory(category_id=category_id, name=name, ename=ename or None)
+    return CompanyCategory(category_id=category_id, name=name, ename=ename or None)
 
 
 def detail_to_policy_chunks(
@@ -312,12 +312,12 @@ def detail_to_policy_chunks(
     if not text:
         return []
 
-    doc_id = f"yungu-policy-{import_id}"
+    doc_id = f"company-policy-{import_id}"
     heading_path = [value for value in [category_name, title] if value]
     file_list = detail.get("fileList") or []
-    source_url = f"https://work.yungu.org/policyDetail/{import_id}"
+    source_url = f"https://example.com/policyDetail/{import_id}"
     base_metadata = {
-        "source": "yungu_policy_system",
+        "source": "company_policy_system",
         "source_url": source_url,
         "import_information_id": import_id,
         "title": title,
@@ -370,19 +370,19 @@ def detail_to_policy_chunks(
     ]
 
 
-class YunguPolicyClient:
+class CompanyPolicyClient:
     def __init__(
         self,
         *,
-        session: str,
-        base_url: str = DEFAULT_YUNGU_BASE_URL,
+        auth_cookie: str,
+        base_url: str = DEFAULT_COMPANY_BASE_URL,
         timeout: float = 30.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        session = session.strip()
-        if not session:
-            raise ValueError("session must not be blank")
-        self._session = session
+        auth_cookie = auth_cookie.strip()
+        if not auth_cookie:
+            raise ValueError("auth_cookie must not be blank")
+        self._auth_cookie = auth_cookie
         self._base_url = base_url.rstrip("/")
         self._client = httpx.Client(
             base_url=self._base_url,
@@ -391,7 +391,7 @@ class YunguPolicyClient:
             headers={
                 "Accept": "application/json, text/plain, */*",
                 "Referer": f"{self._base_url}/home/policyList",
-                "Cookie": f"SESSION={self._session}",
+                "Cookie": self._auth_cookie,
             },
             follow_redirects=True,
         )
@@ -399,7 +399,7 @@ class YunguPolicyClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "YunguPolicyClient":
+    def __enter__(self) -> "CompanyPolicyClient":
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -411,17 +411,17 @@ class YunguPolicyClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise YunguApiError(f"Yungu API returned non-JSON for {path}") from exc
+            raise CompanyApiError(f"Company API returned non-JSON for {path}") from exc
         if not isinstance(payload, dict):
-            raise YunguApiError(f"Yungu API returned unexpected payload type for {path}")
+            raise CompanyApiError(f"Company API returned unexpected payload type for {path}")
         if payload.get("ifLogin") is False:
-            raise YunguApiError("Yungu API session is not logged in or has expired")
+            raise CompanyApiError("Company API authentication cookie is not logged in or has expired")
         if payload.get("status") is False or payload.get("code") not in (None, 0, 200, 1001, "0", "200", "1001"):
             message = payload.get("message") or payload.get("msg") or "unknown error"
-            raise YunguApiError(f"Yungu API error for {path}: {message}")
+            raise CompanyApiError(f"Company API error for {path}: {message}")
         return payload
 
-    def fetch_policy_categories(self, *, policy_type: int = DEFAULT_POLICY_TYPE) -> list[YunguCategory]:
+    def fetch_policy_categories(self, *, policy_type: int = DEFAULT_POLICY_TYPE) -> list[CompanyCategory]:
         payload = self._get_json("/api/import/policySystemTypeList", params={"policyType": policy_type})
         content = payload.get("content") or []
         if isinstance(content, dict):
@@ -429,9 +429,9 @@ class YunguPolicyClient:
         elif isinstance(content, list):
             systems = content
         else:
-            raise YunguApiError("policySystemTypeList content must be a list or object")
+            raise CompanyApiError("policySystemTypeList content must be a list or object")
 
-        categories: list[YunguCategory] = []
+        categories: list[CompanyCategory] = []
         seen_ids: set[int] = set()
         for system in systems:
             if not isinstance(system, dict):
@@ -457,7 +457,7 @@ class YunguPolicyClient:
         policy_type: int = DEFAULT_POLICY_TYPE,
         category_id: int | None = None,
         keyword: str = "",
-    ) -> YunguInformationPage:
+    ) -> CompanyInformationPage:
         if page_num <= 0:
             raise ValueError("page_num must be positive")
         if page_size <= 0:
@@ -474,11 +474,11 @@ class YunguPolicyClient:
         payload = self._get_json("/api/import/informationList", params=params)
         content = payload.get("content") or {}
         if not isinstance(content, dict):
-            raise YunguApiError("informationList content must be an object")
+            raise CompanyApiError("informationList content must be an object")
         rows = content.get("data") or content.get("list") or []
         if not isinstance(rows, list):
-            raise YunguApiError("informationList rows must be a list")
-        return YunguInformationPage(
+            raise CompanyApiError("informationList rows must be a list")
+        return CompanyInformationPage(
             rows=[row for row in rows if isinstance(row, dict)],
             total=int(content.get("total") or 0),
             page_num=int(content.get("pageNum") or page_num),
@@ -494,7 +494,7 @@ class YunguPolicyClient:
         )
         content = payload.get("content") or {}
         if not isinstance(content, dict):
-            raise YunguApiError("notificationById content must be an object")
+            raise CompanyApiError("notificationById content must be an object")
         return content
 
 
@@ -515,8 +515,8 @@ def _stats(
     documents_skipped: int,
     chunks_stored: int,
     pages_read: int,
-) -> YunguImportStats:
-    return YunguImportStats(
+) -> CompanyImportStats:
+    return CompanyImportStats(
         documents_seen=documents_seen,
         documents_imported=documents_imported,
         documents_skipped=documents_skipped,
@@ -538,7 +538,7 @@ def _title_from_row_or_detail(row: dict[str, Any], detail: dict[str, Any] | None
     )
 
 
-def _with_category_metadata(detail: dict[str, Any], category: YunguCategory | None) -> dict[str, Any]:
+def _with_category_metadata(detail: dict[str, Any], category: CompanyCategory | None) -> dict[str, Any]:
     if category is None:
         return detail
     enriched = dict(detail)
@@ -549,13 +549,13 @@ def _with_category_metadata(detail: dict[str, Any], category: YunguCategory | No
     return enriched
 
 
-def ingest_yungu_policy_report(
+def ingest_company_policy_report(
     *,
     client: Any,
     embedding_client: EmbeddingLike,
     store: StoreLike,
     policy_type: int = DEFAULT_POLICY_TYPE,
-    category: YunguCategory | None = None,
+    category: CompanyCategory | None = None,
     category_id: int | None = None,
     page_size: int = 50,
     max_docs: int | None = None,
@@ -566,7 +566,7 @@ def ingest_yungu_policy_report(
     keyword: str = "",
     dry_run: bool = False,
     continue_on_error: bool = True,
-) -> YunguPolicyIngestReport:
+) -> CompanyPolicyIngestReport:
     if page_size <= 0:
         raise ValueError("page_size must be positive")
     if max_docs is not None and max_docs <= 0:
@@ -578,7 +578,7 @@ def ingest_yungu_policy_report(
 
     effective_category_id = category.category_id if category is not None else category_id
     effective_category = category or (
-        YunguCategory(category_id=effective_category_id, name=f"category-{effective_category_id}")
+        CompanyCategory(category_id=effective_category_id, name=f"category-{effective_category_id}")
         if effective_category_id is not None
         else None
     )
@@ -591,7 +591,7 @@ def ingest_yungu_policy_report(
     page_num = 1
     total_pages: int | None = None
     total_available = 0
-    documents: list[YunguProcessedDocument] = []
+    documents: list[CompanyProcessedDocument] = []
 
     while True:
         if max_pages is not None and pages_read >= max_pages:
@@ -614,7 +614,7 @@ def ingest_yungu_policy_report(
 
         for row in page.rows:
             if max_docs is not None and documents_seen >= max_docs:
-                return YunguPolicyIngestReport(
+                return CompanyPolicyIngestReport(
                     category=effective_category,
                     total_available=total_available,
                     stats=_stats(
@@ -631,7 +631,7 @@ def ingest_yungu_policy_report(
             documents_seen += 1
             if import_id is None:
                 documents_skipped += 1
-                documents.append(YunguProcessedDocument(None, _title_from_row_or_detail(row, None, "unknown"), "skipped", reason="missing importInformationId"))
+                documents.append(CompanyProcessedDocument(None, _title_from_row_or_detail(row, None, "unknown"), "skipped", reason="missing importInformationId"))
                 continue
 
             detail: dict[str, Any] | None = None
@@ -641,7 +641,7 @@ def ingest_yungu_policy_report(
                 title = _title_from_row_or_detail(row, detail, import_id)
                 if not chunks:
                     documents_skipped += 1
-                    documents.append(YunguProcessedDocument(import_id, title, "skipped", reason="empty cleaned body"))
+                    documents.append(CompanyProcessedDocument(import_id, title, "skipped", reason="empty cleaned body"))
                     continue
 
                 if dry_run:
@@ -653,19 +653,19 @@ def ingest_yungu_policy_report(
                         chunks_stored += len(batch)
 
                 documents_imported += 1
-                documents.append(YunguProcessedDocument(import_id, title, "imported", chunk_count=len(chunks)))
+                documents.append(CompanyProcessedDocument(import_id, title, "imported", chunk_count=len(chunks)))
             except Exception as exc:
                 if not continue_on_error:
                     raise
                 documents_skipped += 1
                 title = _title_from_row_or_detail(row, detail, import_id)
-                documents.append(YunguProcessedDocument(import_id, title, "error", reason=f"{type(exc).__name__}: {exc}"))
+                documents.append(CompanyProcessedDocument(import_id, title, "error", reason=f"{type(exc).__name__}: {exc}"))
 
         if page_num >= total_pages:
             break
         page_num += 1
 
-    return YunguPolicyIngestReport(
+    return CompanyPolicyIngestReport(
         category=effective_category,
         total_available=total_available,
         stats=_stats(
@@ -679,7 +679,7 @@ def ingest_yungu_policy_report(
     )
 
 
-def ingest_yungu_policies(
+def ingest_company_policies(
     *,
     client: Any,
     embedding_client: EmbeddingLike,
@@ -694,8 +694,8 @@ def ingest_yungu_policies(
     embedding_batch_size: int = 16,
     keyword: str = "",
     dry_run: bool = False,
-) -> YunguImportStats:
-    report = ingest_yungu_policy_report(
+) -> CompanyImportStats:
+    report = ingest_company_policy_report(
         client=client,
         embedding_client=embedding_client,
         store=store,
@@ -713,13 +713,13 @@ def ingest_yungu_policies(
     return report.stats
 
 
-def ingest_yungu_categories(
+def ingest_company_categories(
     *,
     client: Any,
     embedding_client: EmbeddingLike,
     store: StoreLike,
     policy_type: int = DEFAULT_POLICY_TYPE,
-    categories: list[YunguCategory] | None = None,
+    categories: list[CompanyCategory] | None = None,
     page_size: int = 50,
     max_docs_per_category: int | None = None,
     max_pages_per_category: int | None = None,
@@ -728,7 +728,7 @@ def ingest_yungu_categories(
     embedding_batch_size: int = 16,
     keyword: str = "",
     dry_run: bool = False,
-) -> YunguCategoryImportSummary:
+) -> CompanyCategoryImportSummary:
     if page_size <= 0:
         raise ValueError("page_size must be positive")
     if max_docs_per_category is not None and max_docs_per_category <= 0:
@@ -738,7 +738,7 @@ def ingest_yungu_categories(
 
     effective_categories = categories if categories is not None else client.fetch_policy_categories(policy_type=policy_type)
     reports = [
-        ingest_yungu_policy_report(
+        ingest_company_policy_report(
             client=client,
             embedding_client=embedding_client,
             store=store,
@@ -755,4 +755,4 @@ def ingest_yungu_categories(
         )
         for category in effective_categories
     ]
-    return YunguCategoryImportSummary(categories=reports)
+    return CompanyCategoryImportSummary(categories=reports)

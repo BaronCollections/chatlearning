@@ -254,7 +254,7 @@ function renderBulletList(titleText, className, values) {
   return section;
 }
 
-function interview(question, answer) {
+function knowledge(question, answer) {
   return { question: question, answer: answer };
 }
 
@@ -288,9 +288,9 @@ function renderCommonQuestions(values) {
   questions.forEach((value) => {
     const item = document.createElement("li");
     const question = document.createElement("strong");
-    question.className = "interview-question";
+    question.className = "knowledge-question";
     const answer = document.createElement("p");
-    answer.className = "interview-answer";
+    answer.className = "knowledge-answer";
 
     if (typeof value === "string") {
       question.textContent = value;
@@ -533,7 +533,7 @@ function renderDetails(details) {
     "rerank_comparison",
     "options",
     "inner_steps",
-    "interview_questions",
+    "knowledge_points",
     "issue_solutions",
     "production_enhancements",
     "requirement",
@@ -567,7 +567,7 @@ function renderDetails(details) {
   const innerSteps = renderBulletList("细节点", "inner-detail-list", details?.inner_steps);
   if (innerSteps) wrapper.appendChild(innerSteps);
 
-  const commonQuestions = renderCommonQuestions(details?.interview_questions);
+  const commonQuestions = renderCommonQuestions(details?.knowledge_points);
   if (commonQuestions) wrapper.appendChild(commonQuestions);
 
   const issueSolutions = renderIssueSolutions(details?.issue_solutions);
@@ -673,7 +673,7 @@ function productionEnhancement(config) {
     requirement: "optional",
     status: "planned",
     term_definitions: [],
-    interview_questions: [],
+    knowledge_points: [],
     issue_solutions: [],
     ...config,
   };
@@ -695,7 +695,7 @@ const productionEnhancements = [
       term("Eval Runner", "批量运行标准问题集并输出通过率、失败原因和回归对比的评测执行器。"),
       term("Forbidden keyword", "答案中不应该出现的词，用来防止相邻章节、错误制度或越权内容混入。"),
     ],
-    interview_questions: [interview("RAG 为什么一定要有回归评测？", "因为检索、切块、rerank 和 prompt 都会互相影响；没有评测集就无法证明一次优化没有破坏其它问题。")],
+    knowledge_points: [knowledge("RAG 为什么一定要有回归评测？", "因为检索、切块、rerank 和 prompt 都会互相影响；没有评测集就无法证明一次优化没有破坏其它问题。")],
     issue_solutions: [issueSolution("只靠人工点几个问题验收", "把高频问题、事故问题和边界问题写成 regression cases，每次改动自动跑。", "线上会反复出现同类错误，团队无法量化质量是否提升。")],
   }),
   productionEnhancement({
@@ -710,7 +710,7 @@ const productionEnhancements = [
     acceptance: "提交 missing_clause / wrong_source 等反馈后，data/bad_cases.jsonl 中能看到可回放的最小记录，且不包含完整 chunk text。",
     boundaries: "反馈不直接修改答案，也不自动训练模型；需要人工或离线任务审核后再进入评测集。",
     term_definitions: [term("Bad Case", "线上或测试中发现的失败样本，通常包含 query、错误类型、期望证据和复现信息。")],
-    interview_questions: [interview("坏例为什么不能只存在聊天历史里？", "聊天历史难检索、难分类、难回归；结构化坏例才能进入评测、排期和质量看板。")],
+    knowledge_points: [knowledge("坏例为什么不能只存在聊天历史里？", "聊天历史难检索、难分类、难回归；结构化坏例才能进入评测、排期和质量看板。")],
     issue_solutions: [issueSolution("保存完整 trace 或正文造成数据风险", "只保存 citation 摘要、doc_id、chunk_id 和反馈标签；敏感正文通过授权环境重新拉取。", "内部制度、个人信息或权限内容可能被错误写入可提交文件。")],
   }),
   productionEnhancement({
@@ -1051,7 +1051,7 @@ const embeddingDetails = {
 
 const ragInnerStepCatalog = {
   request_intake: [
-    microStep("读取原始问题", "保留用户原文、top_k 和入口来源，后续 trace 必须能回放原始输入。", { interview_questions: [interview("为什么不能只记录归一化后的 query？", "原始 query 是审计和复盘的基准；只记录归一化结果会丢掉用户真实表达，后面无法判断清洗或改写是否引入语义变化。"), interview("trace_id 应该在哪里生成？", "应在请求入口生成，并贯穿检索、rerank、LLM 和前端展示；这样日志、Langfuse span 和用户会话才能稳定关联。")] }),
+    microStep("读取原始问题", "保留用户原文、top_k 和入口来源，后续 trace 必须能回放原始输入。", { knowledge_points: [knowledge("为什么不能只记录归一化后的 query？", "原始 query 是审计和复盘的基准；只记录归一化结果会丢掉用户真实表达，后面无法判断清洗或改写是否引入语义变化。"), knowledge("trace_id 应该在哪里生成？", "应在请求入口生成，并贯穿检索、rerank、LLM 和前端展示；这样日志、Langfuse span 和用户会话才能稳定关联。")] }),
     microStep("生成 trace_id", "为本次请求生成稳定追踪 ID，用于日志、Langfuse 和前后端关联。", { term_definitions: [term("trace_id", "一次请求的唯一追踪编号，用于把检索、模型、工具调用串起来。")] }),
     microStep("初始化执行上下文", "把用户、会话、top_k、时间、权限上下文放进 pipeline context。", { pitfalls: ["上下文缺用户身份，后面就无法做权限过滤。"] }),
   ],
@@ -1063,7 +1063,7 @@ const ragInnerStepCatalog = {
   normalize_text: [
     microStep("去首尾空白", "使用确定性规则移除首尾空格、换行和制表符。", { tool: "str.strip()" }),
     microStep("压缩连续空白", "把连续空白统一成单个空格，让缓存键、token 和 trace 更稳定。", { tool: "split() + join()" }),
-    microStep("语义保持检查", "确认清洗只改变格式，不替换词义、不扩大问题范围。", { interview_questions: [interview("normalize 和 rewrite 的边界是什么？", "normalize 只做格式层面的确定性清洗；rewrite 会改变检索表达，所以必须做语义漂移检查。")] }),
+    microStep("语义保持检查", "确认清洗只改变格式，不替换词义、不扩大问题范围。", { knowledge_points: [knowledge("normalize 和 rewrite 的边界是什么？", "normalize 只做格式层面的确定性清洗；rewrite 会改变检索表达，所以必须做语义漂移检查。")] }),
   ],
   query_understanding: [
     microStep("识别意图", "判断用户是在问规则、流程、定义、适用范围还是最新版本。", { term_definitions: [term("Intent", "用户真正想完成的动作或问题类型。 ")] }),
@@ -1073,7 +1073,7 @@ const ragInnerStepCatalog = {
   query_rewrite: [
     microStep("生成独立问题", "把依赖上下文的短问句改写成可单独检索的问题。", { term_definitions: [term("Standalone query", "不依赖聊天上文也能表达完整意图的问题。 ")] }),
     microStep("补充同义词", "补年假/年休假、制度/规则等业务同义词，提高召回率。", { pitfalls: ["同义词扩展不能加入用户没有问到的新对象。"] }),
-    microStep("语义漂移检查", "比较改写前后对象、动作、时间和范围是否一致。", { interview_questions: [interview("query rewrite 为什么可能造成错误答案？", "改写可能扩大对象、改变时间或引入同义词误判，导致检索到看似相关但业务范围错误的证据。")] }),
+    microStep("语义漂移检查", "比较改写前后对象、动作、时间和范围是否一致。", { knowledge_points: [knowledge("query rewrite 为什么可能造成错误答案？", "改写可能扩大对象、改变时间或引入同义词误判，导致检索到看似相关但业务范围错误的证据。")] }),
   ],
   tokenize: [
     microStep("调用 tokenizer", "用 embedding 模型对应 tokenizer 展示真实 token 边界。", { term_definitions: [term("Tokenizer", "把文本切成模型词表 token 的工具。 ")] }),
@@ -1086,7 +1086,7 @@ const ragInnerStepCatalog = {
     microStep("校验维度和版本", "确认 query vector 和文档向量使用同一模型、同一维度、同一归一化策略。", { quality_checks: embeddingDetails.quality_checks }),
   ],
   retrieval_plan: [
-    microStep("确定 top_k", "设置召回候选数量，平衡召回率、rerank 成本和上下文长度。", { interview_questions: [interview("top_k 过大或过小分别有什么问题？", "过小会漏召回，过大会增加 rerank 和上下文成本，还可能把噪声证据带入答案。")] }),
+    microStep("确定 top_k", "设置召回候选数量，平衡召回率、rerank 成本和上下文长度。", { knowledge_points: [knowledge("top_k 过大或过小分别有什么问题？", "过小会漏召回，过大会增加 rerank 和上下文成本，还可能把噪声证据带入答案。")] }),
     microStep("识别精确制度查询", "把二类违规、4.1、弄虚作假行为识别为 exact policy lookup。", { term_definitions: [term("Exact match", "对制度标题、条款号、章节名做确定性匹配，适合精确制度查询。 ")] }),
     microStep("生成过滤条件", "根据分类、权限、时间、目标章节和排除章节生成 metadata filter。", { pitfalls: ["没有权限过滤和章节约束的企业 RAG 不能上线。"] }),
     microStep("选择 Hybrid Search", "决定 dense vector、sparse keyword、exact match 是否并行召回。", { term_definitions: [term("Hybrid Search", "结合向量语义召回、关键词召回和精确匹配的检索方式。 ")] }),
@@ -1100,7 +1100,7 @@ const ragInnerStepCatalog = {
   rerank: [
     microStep("构造 query-document pair", "把用户问题和候选 chunk 组成重排输入。", { term_definitions: [term("Cross-encoder", "同时读取 query 和文档并输出相关性分数的模型。 ")] }),
     microStep("计算 rerank score", "结合语义、关键词、标题、来源和业务规则重新打分。", { pitfalls: ["只看向量距离可能把语义相近但制度不相关的文本排第一。"] }),
-    microStep("排序稳定性检查", "保留 before/after 排名，方便解释为什么候选顺序改变。", { interview_questions: [interview("召回和 rerank 的职责边界是什么？", "召回负责尽量找全候选，rerank 负责在候选中重新排序和压噪；两者目标不同，不能互相替代。")] }),
+    microStep("排序稳定性检查", "保留 before/after 排名，方便解释为什么候选顺序改变。", { knowledge_points: [knowledge("召回和 rerank 的职责边界是什么？", "召回负责尽量找全候选，rerank 负责在候选中重新排序和压噪；两者目标不同，不能互相替代。")] }),
   ],
   evidence_quality: [
     microStep("相关度阈值", "低于阈值时不强答，改为提示证据不足或反问。", { quality_checks: [{ name: "relevance_threshold", status: "ok", reason: "证据不足时强答会制造幻觉。" }] }),
@@ -1109,7 +1109,7 @@ const ragInnerStepCatalog = {
     microStep("参见型片段过滤", "如果候选只是在别的制度里写“具体参见某制度”，不能把它当作最终答案证据。", { term_definitions: [term("Direct evidence", "直接包含目标章节、定义或条款正文的证据；只提到参见其它制度的文本只能作为线索。 ")] }),
     microStep("Citation Merge", "按 doc_id、section_path、clause_title 合并重复来源。", { term_definitions: [term("Citation Merge", "把同一制度同一章节的多个 chunk 合并为一个可审计来源。 ")] }),
     microStep("时效性检查", "检查 publish_date、effective_date 和是否存在新旧制度冲突。", { pitfalls: ["制度问答经常错在旧政策覆盖新政策。"] }),
-    microStep("引用完整性检查", "确认答案能引用具体制度、章节、来源和必要元数据。", { interview_questions: [interview("RAG 如何降低 hallucination？", "通过只基于可引用证据回答、设置相关度阈值、拒答证据不足问题，并把来源返回给用户审计。")] }),
+    microStep("引用完整性检查", "确认答案能引用具体制度、章节、来源和必要元数据。", { knowledge_points: [knowledge("RAG 如何降低 hallucination？", "通过只基于可引用证据回答、设置相关度阈值、拒答证据不足问题，并把来源返回给用户审计。")] }),
   ],
   answer_and_observe: [
     microStep("组织证据上下文", "把高质量证据按引用和 token budget 拼成回答上下文。", { term_definitions: [term("Context window", "模型一次生成时可读取的上下文长度。 ")] }),
@@ -1122,7 +1122,7 @@ const prefixInnerStepCatalog = {
   embed: [
     microStep("输入质量检查", "检查文本为空、过长、语言混杂和不可解析字符。"),
     microStep("模型与维度确认", "确认 query/document embedding 使用同一模型版本和维度。", embeddingDetails),
-    microStep("索引与召回验证", "用样例 query 检查向量库是否能召回目标 chunk。", { interview_questions: [interview("如何判断 embedding 模型适不适合你的业务？", "用真实问题集做离线评测，比较 recall@k、MRR、跨语言表现、成本和部署约束，而不是只看通用榜单。")] }),
+    microStep("索引与召回验证", "用样例 query 检查向量库是否能召回目标 chunk。", { knowledge_points: [knowledge("如何判断 embedding 模型适不适合你的业务？", "用真实问题集做离线评测，比较 recall@k、MRR、跨语言表现、成本和部署约束，而不是只看通用榜单。")] }),
   ],
   doc: [
     microStep("语义边界识别", "按标题、段落、条款和表格边界切分文档。"),
@@ -1137,12 +1137,12 @@ const prefixInnerStepCatalog = {
   lc: [
     microStep("组件装配", "把 prompt、model、tools、retriever 和 memory 组合成 chain/agent。"),
     microStep("调用边界控制", "限制工具调用次数、输入输出 schema 和异常分支。"),
-    microStep("结果解释", "把 tool observation 和模型输出串成可审计轨迹。", { interview_questions: [interview("LangChain 的优点和局限是什么？", "优点是组件丰富、上手快；局限是复杂链路容易隐藏状态和异常边界，生产系统要补 tracing、schema 和可控降级。")] }),
+    microStep("结果解释", "把 tool observation 和模型输出串成可审计轨迹。", { knowledge_points: [knowledge("LangChain 的优点和局限是什么？", "优点是组件丰富、上手快；局限是复杂链路容易隐藏状态和异常边界，生产系统要补 tracing、schema 和可控降级。")] }),
   ],
   lg: [
     microStep("State 读写", "每个节点只读写明确的 state 字段，避免隐式共享状态。"),
     microStep("条件边和并行边", "用 graph edge 表达分支、循环、并行和汇聚。"),
-    microStep("Checkpoint 与恢复", "失败后从保存的 state 继续执行，而不是整条链重跑。", { interview_questions: [interview("LangGraph 相比普通 chain 解决了什么问题？", "它把流程建模成有状态图，适合分支、循环、并行、人工介入和 checkpoint 恢复，比线性 chain 更可控。")] }),
+    microStep("Checkpoint 与恢复", "失败后从保存的 state 继续执行，而不是整条链重跑。", { knowledge_points: [knowledge("LangGraph 相比普通 chain 解决了什么问题？", "它把流程建模成有状态图，适合分支、循环、并行、人工介入和 checkpoint 恢复，比线性 chain 更可控。")] }),
   ],
   qr: [
     microStep("候选改写生成", "生成多个查询候选，不直接相信第一个改写结果。"),
@@ -1152,7 +1152,7 @@ const prefixInnerStepCatalog = {
   ma: [
     microStep("任务拆解", "协调器把问题拆成检索、推理、审查等角色任务。"),
     microStep("并行执行", "互不依赖的 Agent 并行工作，减少等待时间。"),
-    microStep("冲突解决", "合并多个 Agent 的结果，显式处理矛盾和缺证据。", { interview_questions: [interview("多 Agent 什么时候有必要，什么时候是过度设计？", "当任务可拆分且角色之间能独立产出时才有价值；简单问答强行多 Agent 只会增加延迟、成本和调试难度。")] }),
+    microStep("冲突解决", "合并多个 Agent 的结果，显式处理矛盾和缺证据。", { knowledge_points: [knowledge("多 Agent 什么时候有必要，什么时候是过度设计？", "当任务可拆分且角色之间能独立产出时才有价值；简单问答强行多 Agent 只会增加延迟、成本和调试难度。")] }),
   ],
   ingest: [
     microStep("数据抽取", "从业务系统拉取列表、详情、附件和权限字段。"),
@@ -1162,16 +1162,16 @@ const prefixInnerStepCatalog = {
   lf: [
     microStep("Trace 建模", "把一次请求拆成 trace 和多个 span。"),
     microStep("评分与反馈", "记录人工反馈、自动评分和错误标签。"),
-    microStep("回放分析", "按 trace 回放，定位改写、召回、rerank 或生成问题。", { interview_questions: [interview("为什么 RAG 系统需要 observability？", "RAG 错误可能发生在改写、召回、rerank、证据拼接或生成任一环节；没有 trace 就无法定位根因。")] }),
+    microStep("回放分析", "按 trace 回放，定位改写、召回、rerank 或生成问题。", { knowledge_points: [knowledge("为什么 RAG 系统需要 observability？", "RAG 错误可能发生在改写、召回、rerank、证据拼接或生成任一环节；没有 trace 就无法定位根因。")] }),
   ],
 };
 
 const ragNodeDetailCatalog = {
   request_intake: {
-    interview_questions: [
-      interview("RAG 的问题应该优先看召回还是生成？", "先用入口 trace 切边界：原始问题、用户身份、top_k、trace_id 是否正确进入链路；如果入口状态错了，后面的召回和生成排查都没有意义。"),
-      interview("为什么请求入口要带 tenant/user/session，而不是只传 message？", "企业知识库首先是权限系统；tenant、user、session 决定能检索哪些文档、是否可追溯、能否复现多轮上下文。"),
-      interview("trace_id 放在前端、网关还是后端生成？", "入口层必须生成或接收一个全链路 trace_id，并透传给检索、rerank、LLM、日志和前端结果，这样线上问题才能按一次请求完整回放。"),
+    knowledge_points: [
+      knowledge("RAG 的问题应该优先看召回还是生成？", "先用入口 trace 切边界：原始问题、用户身份、top_k、trace_id 是否正确进入链路；如果入口状态错了，后面的召回和生成排查都没有意义。"),
+      knowledge("为什么请求入口要带 tenant/user/session，而不是只传 message？", "企业知识库首先是权限系统；tenant、user、session 决定能检索哪些文档、是否可追溯、能否复现多轮上下文。"),
+      knowledge("trace_id 放在前端、网关还是后端生成？", "入口层必须生成或接收一个全链路 trace_id，并透传给检索、rerank、LLM、日志和前端结果，这样线上问题才能按一次请求完整回放。"),
     ],
     issue_solutions: [
       issueSolution("入口没有固化 top_k、用户身份和 trace_id", "把 request schema 固定为 message/top_k/user_context/session_id/trace_id；缺失身份时只允许走公开样例或直接拒绝进入企业知识库。", "同一个问题在不同用户下返回不同制度，事故发生后无法判断是权限、召回还是模型造成。"),
@@ -1179,9 +1179,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   input_guardrails: {
-    interview_questions: [
-      interview("Prompt injection 为什么不能只靠入口拦截？", "入口能拦用户输入里的显式攻击，但 RAG 还会从文档里取回恶意内容；所以检索后和生成前也要做 evidence guardrail。"),
-      interview("什么时候应该拒答，而不是继续检索？", "权限不足、空输入、明显越权、要求泄露系统提示或内部密钥时应拒答；业务问题不完整但低风险时可以进入理解阶段并标记歧义。"),
+    knowledge_points: [
+      knowledge("Prompt injection 为什么不能只靠入口拦截？", "入口能拦用户输入里的显式攻击，但 RAG 还会从文档里取回恶意内容；所以检索后和生成前也要做 evidence guardrail。"),
+      knowledge("什么时候应该拒答，而不是继续检索？", "权限不足、空输入、明显越权、要求泄露系统提示或内部密钥时应拒答；业务问题不完整但低风险时可以进入理解阶段并标记歧义。"),
     ],
     issue_solutions: [
       issueSolution("护栏只检查用户 query，不检查检索文档", "把 guardrail 分成入口检查和 evidence 检查；检索回来的 chunk 如果要求模型忽略规则或泄露信息，应从上下文中剔除。", "攻击文本可以藏在制度附件、网页正文或历史工单里，入口看不到这些内容。"),
@@ -1189,9 +1189,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   normalize_text: {
-    interview_questions: [
-      interview("normalize 和 query rewrite 的边界是什么？", "normalize 只能做确定性格式清洗，例如 trim、压缩空白、统一全半角；rewrite 会改变检索表达，必须单独记录和做语义漂移检查。"),
-      interview("为什么要同时保留 raw query 和 normalized query？", "raw query 用于审计用户原意，normalized query 用于稳定缓存和后续处理；只保留后者会看不出清洗是否引入错误。"),
+    knowledge_points: [
+      knowledge("normalize 和 query rewrite 的边界是什么？", "normalize 只能做确定性格式清洗，例如 trim、压缩空白、统一全半角；rewrite 会改变检索表达，必须单独记录和做语义漂移检查。"),
+      knowledge("为什么要同时保留 raw query 和 normalized query？", "raw query 用于审计用户原意，normalized query 用于稳定缓存和后续处理；只保留后者会看不出清洗是否引入错误。"),
     ],
     issue_solutions: [
       issueSolution("清洗规则误删条款编号或中文标点", "对 `4.1`、`（二）`、书名号、冒号这类制度结构符号做保护测试；这些符号通常是精确检索的关键。", "问 `4.1` 或 `二类违规` 时，结构符号丢失会让 Hybrid Search 和章节截取失效。"),
@@ -1199,9 +1199,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   query_understanding: {
-    interview_questions: [
-      interview("怎么判断用户是在做精确条款查询，而不是普通语义查询？", "看是否包含制度名、条款号、章节名、定义问法，例如 `二类违规`、`4.1`、`弄虚作假行为是什么`；这类问题要走 exact/hybrid/scoped evidence。"),
-      interview("用户问题缺少年级、员工身份或时间，应该反问还是先检索？", "低风险知识问答可以先检索并说明适用边界；涉及权限、审批、处罚、金额或个人数据时应先澄清关键条件。"),
+    knowledge_points: [
+      knowledge("怎么判断用户是在做精确条款查询，而不是普通语义查询？", "看是否包含制度名、条款号、章节名、定义问法，例如 `二类违规`、`4.1`、`弄虚作假行为是什么`；这类问题要走 exact/hybrid/scoped evidence。"),
+      knowledge("用户问题缺少年级、员工身份或时间，应该反问还是先检索？", "低风险知识问答可以先检索并说明适用边界；涉及权限、审批、处罚、金额或个人数据时应先澄清关键条件。"),
     ],
     issue_solutions: [
       issueSolution("把 `二类违规是什么` 当普通语义查询", "Query understanding 输出 `exact_policy_lookup`、target_section、exclude_sections；后续 retrieval/rerank/scope 都读取这些结构化字段。", "embedding 会把一类、二类、三类违规都看成相关，最终答案混入相邻章节。"),
@@ -1209,9 +1209,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   query_rewrite: {
-    interview_questions: [
-      interview("Query rewrite 为什么可能让 RAG 变差？", "改写可能加入用户没问的对象、时间或同义词，召回更丰富但语义漂移；所以要记录 added_terms，并检查对象、动作、范围是否一致。"),
-      interview("Multi-query 或 RAG-Fusion 什么时候值得做？", "当用户表达口语化、召回容易漏时可以多路改写；但每条改写都要去重、限流和评估，否则成本和噪声都会上升。"),
+    knowledge_points: [
+      knowledge("Query rewrite 为什么可能让 RAG 变差？", "改写可能加入用户没问的对象、时间或同义词，召回更丰富但语义漂移；所以要记录 added_terms，并检查对象、动作、范围是否一致。"),
+      knowledge("Multi-query 或 RAG-Fusion 什么时候值得做？", "当用户表达口语化、召回容易漏时可以多路改写；但每条改写都要去重、限流和评估，否则成本和噪声都会上升。"),
     ],
     issue_solutions: [
       issueSolution("改写把精确条款问题扩成泛问", "精确查询只补充同一章节/条款的别名，不补充跨制度同义词；改写结果要带 semantic_drift_check。", "问 `虚假报销` 时如果扩成 `报销制度`，会召回财务流程而不是纪律条款。"),
@@ -1219,9 +1219,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   tokenize: {
-    interview_questions: [
-      interview("为什么面试会问 tokenizer，而不是只问 embedding？", "tokenizer 决定截断、成本和模型实际看到的边界；中文、编号、表格符号被怎么切，会影响条款检索和上下文拼接。"),
-      interview("用字符数控制 chunk 长度有什么问题？", "字符数不等于 token 数；中英混排、表格、URL、编号的 token 密度不同，必须按 tokenizer 结果估算预算。"),
+    knowledge_points: [
+      knowledge("为什么知识点会追问 tokenizer，而不是只问 embedding？", "tokenizer 决定截断、成本和模型实际看到的边界；中文、编号、表格符号被怎么切，会影响条款检索和上下文拼接。"),
+      knowledge("用字符数控制 chunk 长度有什么问题？", "字符数不等于 token 数；中英混排、表格、URL、编号的 token 密度不同，必须按 tokenizer 结果估算预算。"),
     ],
     issue_solutions: [
       issueSolution("chunk 或 query 被静默截断", "记录 token_count、max_tokens 和 truncation 状态；超过阈值时拆分或拒绝，不允许静默截断。", "被截断后模型和向量库看到的问题不完整，排查时却以为用的是用户原问题。"),
@@ -1229,9 +1229,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   query_embedding: {
-    interview_questions: [
-      interview("Embedding 模型怎么选，不能只说看排行榜？", "用业务评测集比较 recall@k、MRR、中文/英文/编号表现、部署合规、延迟和成本；排行榜只能作为候选筛选。"),
-      interview("为什么 query embedding 和 document embedding 必须同模型同版本？", "向量空间由模型定义；不同模型或不同版本的向量不可直接比较，混用会让距离失去语义意义。"),
+    knowledge_points: [
+      knowledge("Embedding 模型怎么选，不能只说看排行榜？", "用业务评测集比较 recall@k、MRR、中文/英文/编号表现、部署合规、延迟和成本；排行榜只能作为候选筛选。"),
+      knowledge("为什么 query embedding 和 document embedding 必须同模型同版本？", "向量空间由模型定义；不同模型或不同版本的向量不可直接比较，混用会让距离失去语义意义。"),
     ],
     issue_solutions: [
       issueSolution("换 embedding 模型后没有重建索引", "embedding_version 写入 metadata；查询模型版本和库内版本不一致时拒绝检索或触发重建。", "线上看起来还能返回结果，但相似度排序已经不可解释。"),
@@ -1239,9 +1239,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   retrieval_plan: {
-    interview_questions: [
-      interview("top_k、candidate_k、final_k 有什么区别？", "candidate_k 是给召回和 rerank 的候选池，final_k 是最终给用户和生成器的证据数；candidate_k 通常要大于 final_k。"),
-      interview("Hybrid Search 是必做还是可选？", "普通语义问答可以先 dense；制度条款、编号、人名、日期、报销金额这类精确信号强的业务，应启用 hybrid。"),
+    knowledge_points: [
+      knowledge("top_k、candidate_k、final_k 有什么区别？", "candidate_k 是给召回和 rerank 的候选池，final_k 是最终给用户和生成器的证据数；candidate_k 通常要大于 final_k。"),
+      knowledge("Hybrid Search 是必做还是可选？", "普通语义问答可以先 dense；制度条款、编号、人名、日期、报销金额这类精确信号强的业务，应启用 hybrid。"),
     ],
     issue_solutions: [
       issueSolution("candidate_k 太小导致 rerank 没有发挥空间", "召回阶段多取候选，例如 final_k=3 时 candidate_k 可设 10-30，再由 rerank 和 evidence filter 压噪。", "目标 chunk 一开始没进入候选池，后面再强的 rerank 也救不回来。"),
@@ -1249,9 +1249,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   initial_retrieval: {
-    interview_questions: [
-      interview("向量召回没命中目标 chunk，应该怎么排查？", "按顺序查：数据是否入库、chunk 是否过粗、embedding 版本是否一致、query 是否漂移、keyword 是否被弱化、candidate_k 是否过小。"),
-      interview("dense、BM25、metadata filter 的职责怎么分？", "dense 找语义相近，BM25/keyword 保留字面精度，metadata filter 控制权限和业务范围；三者不是互相替代。"),
+    knowledge_points: [
+      knowledge("向量召回没命中目标 chunk，应该怎么排查？", "按顺序查：数据是否入库、chunk 是否过粗、embedding 版本是否一致、query 是否漂移、keyword 是否被弱化、candidate_k 是否过小。"),
+      knowledge("dense、BM25、metadata filter 的职责怎么分？", "dense 找语义相近，BM25/keyword 保留字面精度，metadata filter 控制权限和业务范围；三者不是互相替代。"),
     ],
     issue_solutions: [
       issueSolution("章节词权重压过条款词", "Hybrid Search 把 target_clause/target_terms 作为 primary terms，权重大于 target_section；二类违规不能压过弄虚作假。", "问具体条款时召回了一堆只含章节名的泛片段，答案偏题。"),
@@ -1259,9 +1259,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   rerank: {
-    interview_questions: [
-      interview("Rerank 是必做还是可选？", "它是可选增强；如果候选噪声大、相似概念多、答案要求高精度就推荐做，低延迟粗问答可以先跳过。"),
-      interview("Rerank 不能解决什么问题？", "不能解决目标文档没召回、权限过滤缺失、chunk 本身混段、metadata 错误；它只能在候选集内部重新排序。"),
+    knowledge_points: [
+      knowledge("Rerank 是必做还是可选？", "它是可选增强；如果候选噪声大、相似概念多、答案要求高精度就推荐做，低延迟粗问答可以先跳过。"),
+      knowledge("Rerank 不能解决什么问题？", "不能解决目标文档没召回、权限过滤缺失、chunk 本身混段、metadata 错误；它只能在候选集内部重新排序。"),
     ],
     issue_solutions: [
       issueSolution("参见型片段因为关键词命中排到第一", "rerank 加 direct evidence 约束：只写 `具体参见某制度` 的片段降权，直接包含定义或条款正文的片段加权。", "用户问定义时，系统引用了另一个制度里的跳转说明，而不是原始条款。"),
@@ -1269,10 +1269,10 @@ const ragNodeDetailCatalog = {
     ],
   },
   evidence_quality: {
-    interview_questions: [
-      interview("参见型片段为什么不能直接作为答案证据？", "它只告诉你真正制度在哪里，不包含定义和条款正文；最终答案必须基于 direct evidence，否则就是把线索当结论。"),
-      interview("为什么 chunk 命中了还要做 span extraction？", "粗 chunk 可能同时包含上一节、目标节和下一节；生成前必须按章节边界截取目标 span，避免把相邻条款带进答案。"),
-      interview("引用重复是不是小问题？", "不是。重复引用会让用户误以为有多个来源支持同一结论，也会挤掉真正不同的证据来源。"),
+    knowledge_points: [
+      knowledge("参见型片段为什么不能直接作为答案证据？", "它只告诉你真正制度在哪里，不包含定义和条款正文；最终答案必须基于 direct evidence，否则就是把线索当结论。"),
+      knowledge("为什么 chunk 命中了还要做 span extraction？", "粗 chunk 可能同时包含上一节、目标节和下一节；生成前必须按章节边界截取目标 span，避免把相邻条款带进答案。"),
+      knowledge("引用重复是不是小问题？", "不是。重复引用会让用户误以为有多个来源支持同一结论，也会挤掉真正不同的证据来源。"),
     ],
     issue_solutions: [
       issueSolution("粗 chunk 同时包含二类和三类违规", "用 start_marker/end_marker 截取目标章节；如果找不到边界，scope_guard 标 warn，并避免直接长段输出。", "答案把用户没问的三类违规一起说出来，属于证据范围越界。"),
@@ -1280,9 +1280,9 @@ const ragNodeDetailCatalog = {
     ],
   },
   answer_and_observe: {
-    interview_questions: [
-      interview("Grounded answer 和普通 LLM 回答有什么区别？", "Grounded answer 每个关键结论都来自检索证据，并带 citation；普通回答可能基于模型参数记忆，无法审计来源。"),
-      interview("RAG 质量怎么评估，不只看用户觉得对不对？", "离线看 recall@k、MRR、context precision、faithfulness；线上看拒答率、引用点击、人工反馈和失败样本回放。"),
+    knowledge_points: [
+      knowledge("Grounded answer 和普通 LLM 回答有什么区别？", "Grounded answer 每个关键结论都来自检索证据，并带 citation；普通回答可能基于模型参数记忆，无法审计来源。"),
+      knowledge("RAG 质量怎么评估，不只看用户觉得对不对？", "离线看 recall@k、MRR、context precision、faithfulness；线上看拒答率、引用点击、人工反馈和失败样本回放。"),
     ],
     issue_solutions: [
       issueSolution("把 top chunk 原样整段输出", "回答阶段要先抽取目标 span，再组织结论、边界和来源；长 chunk 只作为证据，不等于最终答案。", "用户要的是答案，不是把制度全文粘出来；长段输出也更容易夹带无关条款。"),
@@ -1869,6 +1869,8 @@ function renderMergeRail(row) {
   rail.append(line, label);
   return rail;
 }
+
+
 
 function renderWorkflowRow(row, rowIndex) {
   const wrapper = document.createElement("section");

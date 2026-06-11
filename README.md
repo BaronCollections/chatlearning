@@ -8,7 +8,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 
 - 学习 RAG：看到输入校验、query 改写、分词、embedding、召回、rerank、证据检查、答案观测这些步骤如何衔接；RAG 基础流程保留 12 个主阶段和 36+ 个细节点。
 - 讲清工程细节：点击节点可以解释为什么用某个技术、有哪些替代方案、真实项目会踩什么坑。
-- 面试和演示：不是只说概念，而是用可视化流程说明真实业务里的 RAG/Agent 设计。
+- 学习和演示：不是只说概念，而是用可视化流程说明真实业务里的 RAG/Agent 设计。
 - 调试检索问题：发送问题后，RAG 流程节点会叠加本次后端 trace，方便定位是改写、embedding、召回还是 rerank 出了问题。
 - 扩展真实系统：项目保留 pgvector、embedding 服务、CLI ingest/search 和 Web API，可以逐步接入真实知识库。
 
@@ -84,13 +84,13 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 6. `trace_pipeline.py` 的 citation 序列化负责把每条结果变成 `[1]`、`[2]` 这样的引用，并带上标题、分类、发布时间、chunk_id、source 和可点击链接。
 7. 前端只渲染后端返回的 `results[].citation`，不会自己猜链接或伪造来源。
 
-云谷制度来源会根据 `import_information_id` 生成 `https://work.yungu.org/policyDetail/{id}` 形式的详情链接；普通样例或文件来源如果没有真实 URL，就只展示 source/page/chunk metadata。这样可以同时满足学习展示、审计追溯和真实业务回答的可信度要求。
+自定义业务制度源会根据 `import_information_id` 和配置的 `base_url` 生成 `https://example.com/policyDetail/{id}` 形式的占位详情链接；普通样例或文件来源如果没有真实 URL，就只展示 source/page/chunk metadata。这样可以同时满足学习展示、审计追溯和真实业务回答的可信度要求，同时避免把内部域名写入公开仓库。
 
 ## 精确条款问答如何避免串段
 
 这次重点修复的是“问二类违规，却把三类违规也答出来”这类真实业务问题。它不是单一 bug，而是从导入、检索、重排、上下文组装到引用展示的链路问题：
 
-1. 结构化切块：`yungu_importer.py` 不再只按固定长度切文本，会优先识别制度里的同级标题和条款组。例如 `4. 弄虚作假行为` 会和 `4.1` 到 `4.4` 放在同一个 `clause_group` chunk 里，并在 metadata 中记录 `section_title`、`clause_no`、`clause_range`、`section_path`。
+1. 结构化切块：`company_importer.py` 不再只按固定长度切文本，会优先识别制度里的同级标题和条款组。例如 `4. 弄虚作假行为` 会和 `4.1` 到 `4.4` 放在同一个 `clause_group` chunk 里，并在 metadata 中记录 `section_title`、`clause_no`、`clause_range`、`section_path`。
 2. 精确意图识别：`trace_pipeline.py` 会识别 `二类违规`、`三类违规`、`弄虚作假行为`、`4.1` 这类查询，标记为 `exact_policy_lookup`。这类问题不能只靠 embedding 相似度。
 3. 问题面识别：系统不只识别目标对象，还会识别用户问的是定义、处罚/处分、流程还是适用条件。例如 `二类违规是什么` 应命中定义段，`二类违规的处罚是什么` 会补充 `处分`、`违规处理`、`处分流程`、`最终处理决定` 等检索词，并标记 `asked_aspect=disciplinary_action`。
 4. 规则型查询解析：`policy_rule_resolver.py` 把“用户事实 -> 制度条件 -> 结论条款”独立出来，不再把每个问法硬写在 `trace_pipeline.py`。例如 `我旷工两天会受到什么处罚` 会被解析为 `target_behavior=absenteeism`、`duration=2天`、`matched_rule=连续旷工3个工作日以下`、`expected_evidence=[扣除旷工期间工资, 记过处分]`。回答时会组合互补证据：`员工纪律制度` 说明它属于 `二类违规行为 / 破坏学校管理秩序行为 / 4.2旷工少于三天`，`工作时间及假期管理制度` 说明处理结果是扣除旷工期间工资并给予记过处分。
@@ -101,7 +101,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 9. Evidence Filter：精确制度查询会把候选分成 `direct_section_evidence`、`direct_behavior_evidence`、`cross_reference_evidence` 和不足证据。参见型片段不会直接进入答案，但可以作为二跳检索线索。
 10. 两跳行为处罚：例如 `虚假报销怎么处罚` 会先用 `4.3虚假报销` 确认它属于 `二类违规行为 / 弄虚作假行为`，再跳到 `1.2二类违规行为` 的处理条款，最后结构化输出事实、规则匹配、处理结果、依据和不确定性。
 11. Citation Merge：如果同一篇制度的多个相邻 chunk 都命中，展示层会按文档、章节和范围合并引用，避免重复来源刷屏。
-12. 可追溯链接：云谷制度链接使用真实详情地址 `https://work.yungu.org/policyDetail/{importInformationId}`，不会生成未验证的前端路由。
+12. 可追溯链接：业务制度链接使用后端确认过的详情地址模板 `https://example.com/policyDetail/{importInformationId}`，不会生成未验证的前端路由；公开仓库只保留占位域名。
 
 是否每一步都必须做：结构化切块、来源 metadata、引用链接是制度问答的基础；Hybrid Search、Rerank、Scope Guard 属于真实业务强烈建议项；Langfuse 观测、离线评测、权限过滤、附件解析会随着生产化程度逐步补齐。
 
@@ -114,7 +114,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 3. 百科详情：点击主节点或细节点后展示术语、输入输出、工具选型、替代方案、质量检查、常见坑、常见问题和问题解决建议。
 4. 真实数据流：后端每个 trace 节点都会输出 `data_flow.input` 和 `data_flow.output`，前端以“入参 / 出参”展示本次请求在该节点真实消费和产出的字段。
 
-这样设计的原因是：学习者需要先看到整体骨架，再逐层深入到真实工程细节；面试准备也需要能解释“为什么这么做”、“什么时候可以不做”和“不这么做会出什么问题”。
+这样设计的原因是：学习者需要先看到整体骨架，再逐层深入到真实工程细节；知识点学习也需要能解释“为什么这么做”、“什么时候可以不做”和“不这么做会出什么问题”。
 
 ## 关键技术点
 
@@ -151,7 +151,7 @@ ChatLearning 是一个面向真实业务 RAG / Agent 系统的学习与调试工
 │   ├── evaluation.py                    # 回归评测执行与结果汇总
 │   ├── bad_cases.py                     # 坏例反馈记录，默认不保存完整正文
 │   ├── samples.py                      # 可公开的样例制度 chunk
-│   ├── yungu_importer.py               # 云谷制度分页、详情、HTML 清洗和结构化切块
+│   ├── company_importer.py               # 通用业务制度分页、详情、HTML 清洗和结构化切块
 │   ├── trace_pipeline.py               # 后端 RAG trace 主流程
 │   ├── web_app.py                      # FastAPI Web 服务
 │   └── web/                            # 原生 JS/CSS 前端
@@ -189,7 +189,7 @@ python3.11 -m venv .venv
 
 ```bash
 RAG_DISABLE_PGVECTOR=true \
-EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
+RAG_EMBEDDING_PROVIDER=local \
 .venv/bin/python -m uvicorn enterprise_rag_mvp.web_app:app --host 127.0.0.1 --port 8010
 ```
 
@@ -198,6 +198,8 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 ```text
 http://127.0.0.1:8010
 ```
+
+`RAG_EMBEDDING_PROVIDER=local` 使用本地确定性 embedding，只适合离线教学和部署验收；生产环境应配置真实 BGE-M3 或同类 embedding 服务。
 
 ## 使用 pgvector
 
@@ -278,14 +280,14 @@ Content-Type: application/json
 | `RERANKER_PROVIDER` | `external_cross_encoder` | trace 中展示的 reranker 名称，例如 `bge-reranker-v2-m3` |
 | `RAG_BAD_CASE_PATH` | `data/bad_cases.jsonl` | `/api/feedback` 写入的坏例 JSONL 路径；`data/` 默认不提交 |
 
-不要把 `.env`、cookie、session、数据库密码或真实源文档提交到仓库；GitHub 发布只同步代码、公开样例、测试和说明文档。
+不要把 `.env`、cookie、登录态、数据库密码或真实源文档提交到仓库；GitHub 发布只同步代码、公开样例、测试和说明文档。
 
 ## 怎么喂数据
 
 公开仓库只包含少量手写样例 chunk，不包含真实企业制度数据。真实接入时建议写一个 importer，按下面流程处理：
 
 1. 从业务系统分页拉取文档列表，只保存必要的文档 ID、标题、分类、发布时间和权限字段。
-2. 逐篇拉取详情正文，不要把 cookie、session 或内部接口地址写死在代码里。
+2. 逐篇拉取详情正文，不要把 cookie、登录态或内部接口地址写死在代码里。
 3. 清洗 HTML、PDF 或 Word 内容，保留标题层级、表格文本、附件信息和来源信息。
 4. 按语义边界切 chunk，优先使用章节/条款/条款组；没有结构时才回退到最大 token 或固定窗口。
 5. 为每个 chunk 写入 metadata，例如 `source`、`category`、`audience`、`publish_date`、`effective_date`、`permission_scope`、`section_title`、`clause_no`、`clause_range`、`source_url`。
@@ -324,33 +326,41 @@ PgVectorStore("postgresql://127.0.0.1:5432/enterprise_rag_mvp").upsert_chunks(ch
 生产导入还需要补齐：分页重试、限流、断点续跑、重复文档检测、删除同步、权限过滤、附件解析、数据脱敏、导入日志和失败告警。
 
 
-## 直接接入云谷制度数据
+## 自定义业务制度源接入
 
-仓库提供了 `ingest-yungu-policies` 命令，用于读取云谷制度列表、逐篇拉取详情正文、清洗 HTML、切 chunk、调用 embedding 服务，并写入 pgvector。
+仓库提供了 `ingest-company-policies` 命令，用于演示“业务系统分页列表 -> 逐篇详情 -> HTML 清洗 -> 结构化切块 -> embedding -> pgvector 写入”的完整导入链路。公开仓库只保留通用 importer 和占位接口地址，不包含任何真实公司域名、认证 cookie、原始制度正文或数据库数据。
 
-SESSION 不要写进代码或 README，建议只放在当前终端环境变量里：
+真实认证 cookie 不要写进代码、README 或提交历史，建议只放在当前终端环境变量或部署平台的 secret 中：
 
 ```bash
-export YUNGU_SESSION='只在本机终端设置，不要提交到仓库'
+export COMPANY_AUTH_COOKIE='<put-your-auth-cookie-here>'
 ```
 
-先做 dry-run，只拉取和切块，不调用 embedding、不写数据库：
+默认接口地址是占位值 `https://example.com`。接入自己的业务系统时，通过参数显式传入真实地址，但不要把真实地址提交到公开仓库：
 
 ```bash
-YUNGU_SESSION="$YUNGU_SESSION" \
-.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+--base-url 'https://your-internal-policy-host.example'
+```
+
+先做 dry-run，只拉取列表和详情并完成清洗切块，不调用 embedding、不写数据库：
+
+```bash
+COMPANY_AUTH_COOKIE="$COMPANY_AUTH_COOKIE" \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-company-policies \
+  --base-url 'https://your-internal-policy-host.example' \
   --dry-run \
   --max-docs 2 \
   --page-size 20
 ```
 
-确认 dry-run 后再写入 pgvector。默认仍然只导入 2 篇，避免误全量：
+确认 dry-run 报告后再写入 pgvector。默认仍然只导入 2 篇，避免误全量：
 
 ```bash
-YUNGU_SESSION="$YUNGU_SESSION" \
+COMPANY_AUTH_COOKIE="$COMPANY_AUTH_COOKIE" \
 RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
 EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
-.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-company-policies \
+  --base-url 'https://your-internal-policy-host.example' \
   --max-docs 2 \
   --page-size 20
 ```
@@ -358,8 +368,9 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 如果要按所有分类分页处理，使用 `--all-categories`。不加 `--all` 时仍然是安全模式：每个分类最多处理 `--max-docs` 篇，适合先验证分类、分页和详情结构。
 
 ```bash
-YUNGU_SESSION="$YUNGU_SESSION" \
-.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+COMPANY_AUTH_COOKIE="$COMPANY_AUTH_COOKIE" \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-company-policies \
+  --base-url 'https://your-internal-policy-host.example' \
   --all-categories \
   --dry-run \
   --max-docs 2 \
@@ -369,10 +380,11 @@ YUNGU_SESSION="$YUNGU_SESSION" \
 确认 dry-run 报告后，再显式使用 `--all-categories --all` 做全分类导入：
 
 ```bash
-YUNGU_SESSION="$YUNGU_SESSION" \
+COMPANY_AUTH_COOKIE="$COMPANY_AUTH_COOKIE" \
 RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
 EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
-.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-company-policies \
+  --base-url 'https://your-internal-policy-host.example' \
   --all-categories \
   --all \
   --page-size 20
@@ -381,10 +393,11 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 如果只导入一个分类，可以继续使用 `--category-id`。如果明确要导入该分类全部文档，也必须显式使用 `--all`：
 
 ```bash
-YUNGU_SESSION="$YUNGU_SESSION" \
+COMPANY_AUTH_COOKIE="$COMPANY_AUTH_COOKIE" \
 RAG_DATABASE_DSN=postgresql://127.0.0.1:5432/enterprise_rag_mvp \
 EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
-.venv/bin/python -m enterprise_rag_mvp.cli ingest-yungu-policies \
+.venv/bin/python -m enterprise_rag_mvp.cli ingest-company-policies \
+  --base-url 'https://your-internal-policy-host.example' \
   --category-id 11 \
   --all
 ```
@@ -397,14 +410,26 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001 \
 
 已有历史数据如果是在旧切块策略下导入的，建议重新执行导入，让数据库里产生新的 `section_overview` 和 `clause_group` chunk。即使暂时不重导，回答阶段的 Span Extraction 也会尽量从粗 chunk 中截取目标章节，但结构化重导的准确性更高。
 
+## GitHub 安全发布说明
+
+本项目发布到 GitHub 时采用独立仓库边界，只提交 `rag-backend` 项目目录内的代码、公开样例、测试和文档。不要从用户主目录或上级目录执行提交，避免把无关项目、日志、证书、数据库备份或个人文件带入提交。
+
+发布前至少执行三类检查：
+
+1. 敏感业务词扫描：确认没有真实公司名、内部域名、服务器 IP、登录态、cookie 值或历史认证信息。
+2. 密钥模式扫描：确认没有 API key、数据库密码、私钥、`.env`、真实 DSN 或认证 header 值。
+3. Git 暂存区检查：确认 `git status --short` 和 `git diff --cached --name-only` 里只出现本项目应该发布的文件。
+
+`.gitignore` 已排除 `.env*`、虚拟环境、缓存、日志、本地数据库、`data/`、`outputs/` 和临时目录；仓库保留 `.env.example`，只用于说明变量名和占位值。
+
 ## 隐私与发布边界
 
-这个仓库只应该包含代码、公开样例、测试和说明文档。当前本地导入到 PostgreSQL 的真实制度数据、embedding 向量、运行时环境变量和 SESSION 都不属于 GitHub 发布内容。
+这个仓库只应该包含代码、公开样例、测试和说明文档。当前本地导入到 PostgreSQL 的真实制度数据、embedding 向量、运行时环境变量和 authentication cookie 都不属于 GitHub 发布内容。
 
 不要提交：
 
 - `.venv/`、缓存、日志和临时文件。
-- `.env`、数据库密码、API key、cookie、session。
+- `.env`、数据库密码、API key、cookie、登录态。
 - 真实制度正文、附件、学生或员工信息。
 - 本机绝对路径和个人目录信息。
 

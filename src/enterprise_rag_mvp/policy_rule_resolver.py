@@ -70,7 +70,7 @@ ABSENTEEISM_UNDER_THREE_TERMS = [
     "二类违规行为",
     "破坏学校管理秩序行为",
     "员工纪律制度",
-    "云谷人守则-员工纪律制度",
+    "***公司人守则-员工纪律制度",
     "扣除旷工期间工资",
     "记过处分",
 ]
@@ -80,16 +80,16 @@ ABSENTEEISM_THREE_OR_MORE_TERMS = [
     "一年内累计两次及以上旷工",
     "一类违规行为",
     "员工纪律制度",
-    "云谷人守则-员工纪律制度",
+    "***公司人守则-员工纪律制度",
     "扣除旷工期间工资",
     "辞退处分",
 ]
 
 ABSENTEEISM_POLICY_TITLE_TERMS = [
     "工作时间及假期管理制度",
-    "云谷人守则-工作时间及假期管理制度",
+    "***公司人守则-工作时间及假期管理制度",
     "员工纪律制度",
-    "云谷人守则-员工纪律制度",
+    "***公司人守则-员工纪律制度",
 ]
 
 CHINESE_NUMBER_MAP = {
@@ -236,7 +236,7 @@ BEHAVIOR_PATTERNS = [
         target_subclause="2.3",
         classification_terms=["二类违规行为", "违反保密义务行为", "2.3打听、讨论员工工资"],
         search_terms=["打听、讨论员工工资", "奖金", "津贴补贴", "个人待遇信息", "二类违规行为", "违反保密义务行为"],
-        preferred_policy_titles=["员工纪律制度", "云谷人守则-员工纪律制度"],
+        preferred_policy_titles=["员工纪律制度", "***公司人守则-员工纪律制度"],
         exclude_sections=["一类违规行为", "三类违规行为"],
     ),
     BehaviorPattern(
@@ -249,7 +249,7 @@ BEHAVIOR_PATTERNS = [
         target_subclause="4.3",
         classification_terms=["二类违规行为", "弄虚作假行为", "4.3虚假报销"],
         search_terms=["虚假报销", "报销未发生的费用", "虚假理由报销", "4.3", "弄虚作假行为"],
-        preferred_policy_titles=["员工纪律制度", "云谷人守则-员工纪律制度"],
+        preferred_policy_titles=["员工纪律制度", "***公司人守则-员工纪律制度"],
         exclude_sections=["一类违规行为", "三类违规行为"],
         exclude_clauses=["3. 侵犯学校权益行为", "5. 破坏学校管理秩序行为"],
     ),
@@ -263,7 +263,7 @@ BEHAVIOR_PATTERNS = [
         target_subclause=None,
         classification_terms=["三类违规行为", "破坏学校管理秩序行为", "一学年中出现两次及两次以上"],
         search_terms=["迟到", "早退", "一学年中出现两次及两次以上", "三类违规行为", "破坏学校管理秩序行为"],
-        preferred_policy_titles=["员工纪律制度", "云谷人守则-员工纪律制度"],
+        preferred_policy_titles=["员工纪律制度", "***公司人守则-员工纪律制度"],
         exclude_sections=["一类违规行为", "二类违规行为"],
     ),
 ]

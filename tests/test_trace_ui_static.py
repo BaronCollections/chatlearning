@@ -39,7 +39,7 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert "inner-step-list" in app_js
     assert "inner-step-chip" in app_js
     assert "常见问题" in app_js
-    assert "面试关注点" not in app_js
+    assert "knowledge_points" in app_js
     assert "个主阶段 /" in app_js
     assert "个细节点" in app_js
     assert "lc_tool_call" in app_js
@@ -107,10 +107,10 @@ def test_common_questions_include_brief_answers_and_are_deduplicated():
     assert "normalizeQuestionKey" in app_js
     assert "question:" in app_js
     assert "answer:" in app_js
-    assert "interview-question" in app_js
-    assert "interview-answer" in app_js
-    assert ".interview-question" in app_css
-    assert ".interview-answer" in app_css
+    assert "knowledge-question" in app_js
+    assert "knowledge-answer" in app_js
+    assert ".knowledge-question" in app_css
+    assert ".knowledge-answer" in app_css
     assert ".common-question-list" in app_css
 
     assert "在真实业务里失败时，应该看哪些日志或 trace" not in app_js
@@ -244,3 +244,102 @@ def test_chat_answer_uses_structured_sections_and_linked_sources():
     assert ".answer-section-title" in app_css
     assert ".answer-result-list" in app_css
     assert ".answer-source-link" in app_css
+
+
+
+def test_evolution_documentation_is_a_standalone_developer_docs_page():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    app_css = (WEB_DIR / "app.css").read_text(encoding="utf-8")
+    docs_js = (WEB_DIR / "docs.js").read_text(encoding="utf-8")
+    docs_css = (WEB_DIR / "docs.css").read_text(encoding="utf-8")
+    docs_html = (WEB_DIR / "docs.html").read_text(encoding="utf-8")
+    index_html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert 'href="/docs"' in index_html
+    assert "演进文档" in index_html
+    assert "docsOverlay" not in index_html
+    assert "evolutionDocs" not in app_js
+    assert "openEvolutionDocs" not in app_js
+    assert "docs-overlay" not in app_css
+
+    assert "ChatLearning Docs" in docs_html
+    assert "docs-page-shell" in docs_html
+    assert "docs-sidebar" in docs_html
+    assert "docsContent" in docs_html
+    assert "学习目录" in docs_html
+    assert "项目起始" in docs_html
+    assert "evolutionDocs" not in docs_js
+    assert "docChapters" in docs_js
+    assert "productionTopics" in docs_js
+    assert "toolDoc(" in docs_js
+    assert "pitfallGroup(" in docs_js
+    assert "realCase(" in docs_js
+    assert "choiceDoc(" in docs_js
+    assert "ioExample(" in docs_js
+    assert "knowledgePoint(" in docs_js
+    assert "renderDocsNav" in docs_js
+    assert "renderDocsContent" in docs_js
+    assert 'document.createElement("details")' in docs_js
+    assert "docs-nav-chapter-index" in docs_js
+    assert "docs-nav-section-index" in docs_js
+    assert "getShortSectionTitle" in docs_js
+    assert "getChapterStage" in docs_js
+    assert "项目起始：业务目标与学习目标" in docs_js
+    assert "项目起始：数据源调研与接口验证" in docs_js
+    assert "知识库构建：分类导入与结构化切块" in docs_js
+    assert "RAG 链路：Query Understanding 与 Query Rewrite" in docs_js
+    assert "规则推理：旷工两天为什么能算出处罚" in docs_js
+    assert "观测与评测：为什么每一步都要可回放" in docs_js
+    assert "部署上线：远端隔离与 IP 端口访问" in docs_js
+    assert "框架 / 工具 / 函数白话说明" in docs_js
+    assert "选型对比：为什么选它" in docs_js
+    assert "真实排查案例" in docs_js
+    assert "真实输入输出" in docs_js
+    assert "对应知识点 / 知识点追问" in docs_js
+    assert "问题和坑点分组" in docs_js
+    assert "可以继续思考的问题" in docs_js
+    assert "来源链接被写错的问题" in docs_js
+    assert "二类违规答案混入三类违规" in docs_js
+    assert "二类违规处罚返回了二类违规定义" in docs_js
+    assert "旷工两天一开始检索不到" in docs_js
+    assert "牛客" in docs_js
+    assert "生产 RAG 专题" in docs_js
+    assert "Langfuse / OpenTelemetry 观测链路" in docs_js
+    assert "Query Router 查询路由" in docs_js
+    assert "Prompt Injection 与数据泄露护栏" in docs_js
+    assert "缓存与成本控制" in docs_js
+    assert "外部知识 API 与工具检索" in docs_js
+    assert "什么时候必须做" in docs_js
+    assert "验证方式" in docs_js
+    assert "标题��中文编号" not in docs_js
+    assert "端口都��能随意占用" not in docs_js
+
+    assert ".docs-page-shell" in docs_css
+    assert ".docs-sidebar" in docs_css
+    assert ".docs-nav-item.active" in docs_css
+    assert ".docs-nav-group" in docs_css
+    assert ".docs-nav-heading" in docs_css
+    assert ".docs-nav-chapter-index" in docs_css
+    assert ".docs-nav-heading-copy" in docs_css
+    assert ".docs-nav-list" in docs_css
+    assert ".docs-nav-section-index" in docs_css
+    assert ".docs-nav-section-title" in docs_css
+    assert ".docs-hero" in docs_css
+    assert ".doc-subtitle" in docs_css
+    assert ".docs-terms" in docs_css
+    assert ".tool-docs" in docs_css
+    assert ".tool-doc-grid" in docs_css
+    assert ".tool-card" in docs_css
+    assert ".tool-row" in docs_css
+    assert ".choice-docs" in docs_css
+    assert ".choice-card" in docs_css
+    assert ".case-docs" in docs_css
+    assert ".case-card" in docs_css
+    assert ".io-docs" in docs_css
+    assert ".io-block" in docs_css
+    assert ".knowledge-docs" in docs_css
+    assert ".knowledge-card" in docs_css
+    assert ".pitfall-docs" in docs_css
+    assert ".pitfall-grid" in docs_css
+    assert ".pitfall-card" in docs_css
+    assert ".study-prompts" in docs_css

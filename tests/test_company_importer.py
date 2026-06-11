@@ -1,18 +1,18 @@
 import httpx
 import pytest
 
-from enterprise_rag_mvp.cli import build_parser
+from enterprise_rag_mvp.cli import _company_base_url, build_parser
 
 from enterprise_rag_mvp.models import PolicyChunk
-from enterprise_rag_mvp.yungu_importer import (
-    YunguApiError,
-    YunguCategory,
-    YunguPolicyClient,
+from enterprise_rag_mvp.company_importer import (
+    CompanyApiError,
+    CompanyCategory,
+    CompanyPolicyClient,
     clean_html_to_text,
     chunk_text,
     detail_to_policy_chunks,
-    ingest_yungu_categories,
-    ingest_yungu_policies,
+    ingest_company_categories,
+    ingest_company_policies,
 )
 
 
@@ -59,11 +59,11 @@ def test_detail_to_policy_chunks_maps_metadata_and_skips_empty_body():
     chunks = detail_to_policy_chunks(detail, max_chars=18, overlap_chars=4)
 
     assert chunks
-    assert chunks[0].doc_id == "yungu-policy-192"
-    assert chunks[0].chunk_id.startswith("yungu-policy-192-chunk-")
+    assert chunks[0].doc_id == "company-policy-192"
+    assert chunks[0].chunk_id.startswith("company-policy-192-chunk-")
     assert chunks[0].heading_path == ["HR政策及知识库", "员工年休假制度"]
     assert "员工连续工作" in " ".join(chunk.text for chunk in chunks)
-    assert chunks[0].metadata["source"] == "yungu_policy_system"
+    assert chunks[0].metadata["source"] == "company_policy_system"
     assert chunks[0].metadata["import_information_id"] == 192
     assert chunks[0].metadata["file_count"] == 1
 
@@ -89,8 +89,8 @@ def test_detail_to_policy_chunks_splits_violation_clause_groups():
     chunks = detail_to_policy_chunks(
         {
             "importInformationId": 16,
-            "cnTitle": "云谷人守则-员工纪律制度",
-            "policyCategoryTypeName": "云谷人守则",
+            "cnTitle": "***公司人守则-员工纪律制度",
+            "policyCategoryTypeName": "***公司人守则",
             "body": body,
         }
     )
@@ -102,7 +102,7 @@ def test_detail_to_policy_chunks_splits_violation_clause_groups():
     assert clause_chunk.metadata["clause_no"] == "4"
     assert clause_chunk.metadata["clause_range"] == "4.1-4.4"
     assert clause_chunk.metadata["section_path"] == ["二类违规行为", "4. 弄虚作假行为"]
-    assert clause_chunk.metadata["source_url"] == "https://work.yungu.org/policyDetail/16"
+    assert clause_chunk.metadata["source_url"] == "https://example.com/policyDetail/16"
     assert "4.1向学校隐瞒" in clause_chunk.text
     assert "4.4 其他弄虚作假" in clause_chunk.text
     assert "3. 侵犯学校权益行为" not in clause_chunk.text
@@ -115,7 +115,7 @@ def test_detail_to_policy_chunks_splits_violation_clause_groups():
     assert "（三）三类违规行为" not in section_chunk.text
 
 
-def test_yungu_policy_client_fetches_list_and_detail_and_rejects_login_failure():
+def test_company_policy_client_fetches_list_and_detail_and_rejects_login_failure():
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -140,7 +140,7 @@ def test_yungu_policy_client_fetches_list_and_detail_and_rejects_login_failure()
             return httpx.Response(200, json={"status": True, "ifLogin": True, "content": {"importInformationId": 192}})
         return httpx.Response(404)
 
-    client = YunguPolicyClient(session="session-value", transport=httpx.MockTransport(handler))
+    client = CompanyPolicyClient(auth_cookie="COMPANY_AUTH=sample", transport=httpx.MockTransport(handler))
 
     page = client.fetch_information_page(page_num=1, page_size=20, policy_type=2, category_id=11)
     detail = client.fetch_detail(192)
@@ -148,18 +148,18 @@ def test_yungu_policy_client_fetches_list_and_detail_and_rejects_login_failure()
     assert page.rows[0]["importInformationId"] == 192
     assert page.total == 1
     assert detail["importInformationId"] == 192
-    assert requests[0].headers["Cookie"] == "SESSION=session-value"
+    assert requests[0].headers["Cookie"] == "COMPANY_AUTH=sample"
     assert requests[0].url.params["policyCategoryType"] == "11"
 
     def login_failed(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"status": False, "ifLogin": False, "message": "not login"})
 
-    failed_client = YunguPolicyClient(session="bad", transport=httpx.MockTransport(login_failed))
-    with pytest.raises(YunguApiError):
+    failed_client = CompanyPolicyClient(auth_cookie="COMPANY_AUTH=bad", transport=httpx.MockTransport(login_failed))
+    with pytest.raises(CompanyApiError):
         failed_client.fetch_detail(1)
 
 
-class FakeYunguClient:
+class FakeCompanyClient:
     def fetch_information_page(self, *, page_num, page_size, policy_type, category_id=None, keyword=""):
         assert policy_type == 2
         return type("Page", (), {
@@ -198,12 +198,12 @@ class FakeStore:
         self.saved.extend(chunks)
 
 
-def test_ingest_yungu_policies_fetches_details_embeds_and_stores_chunks():
+def test_ingest_company_policies_fetches_details_embeds_and_stores_chunks():
     embedding_client = FakeEmbeddingClient()
     store = FakeStore()
 
-    stats = ingest_yungu_policies(
-        client=FakeYunguClient(),
+    stats = ingest_company_policies(
+        client=FakeCompanyClient(),
         embedding_client=embedding_client,
         store=store,
         policy_type=2,
@@ -217,11 +217,11 @@ def test_ingest_yungu_policies_fetches_details_embeds_and_stores_chunks():
     assert stats.documents_seen == 1
     assert stats.documents_imported == 1
     assert stats.chunks_stored >= 1
-    assert store.saved[0].metadata["source"] == "yungu_policy_system"
+    assert store.saved[0].metadata["source"] == "company_policy_system"
     assert embedding_client.texts == [chunk.text for chunk in store.saved]
 
 
-class FakeCategoryYunguClient:
+class FakeCategoryCompanyClient:
     def __init__(self):
         self.page_calls = []
         self.detail_calls = []
@@ -229,8 +229,8 @@ class FakeCategoryYunguClient:
     def fetch_policy_categories(self, *, policy_type):
         assert policy_type == 2
         return [
-            YunguCategory(category_id=8, name="后勤制度", ename="Logistics Policy and Rules"),
-            YunguCategory(category_id=11, name="HR政策及知识库", ename="HR Policy and Knowledge Base"),
+            CompanyCategory(category_id=8, name="后勤制度", ename="Logistics Policy and Rules"),
+            CompanyCategory(category_id=11, name="HR政策及知识库", ename="HR Policy and Knowledge Base"),
         ]
 
     def fetch_information_page(self, *, page_num, page_size, policy_type, category_id=None, keyword=""):
@@ -263,12 +263,12 @@ class FakeCategoryYunguClient:
         }
 
 
-def test_ingest_yungu_categories_paginates_each_category_and_reports_documents():
+def test_ingest_company_categories_paginates_each_category_and_reports_documents():
     embedding_client = FakeEmbeddingClient()
     store = FakeStore()
-    client = FakeCategoryYunguClient()
+    client = FakeCategoryCompanyClient()
 
-    summary = ingest_yungu_categories(
+    summary = ingest_company_categories(
         client=client,
         embedding_client=embedding_client,
         store=store,
@@ -297,8 +297,8 @@ def test_ingest_yungu_categories_paginates_each_category_and_reports_documents()
     assert store.saved[0].metadata["policy_category_type_name"] == "后勤制度"
 
 
-def test_cli_exposes_safe_yungu_ingest_defaults():
-    args = build_parser().parse_args(["ingest-yungu-policies", "--session", "session-value", "--dry-run"])
+def test_cli_exposes_safe_company_ingest_defaults():
+    args = build_parser().parse_args(["ingest-company-policies", "--auth-cookie", "COMPANY_AUTH=sample", "--dry-run"])
 
     assert args.max_docs == 2
     assert args.all is False
@@ -306,11 +306,32 @@ def test_cli_exposes_safe_yungu_ingest_defaults():
     assert args.dry_run is True
 
     category_args = build_parser().parse_args([
-        "ingest-yungu-policies",
-        "--session",
-        "session-value",
+        "ingest-company-policies",
+        "--auth-cookie",
+        "COMPANY_AUTH=sample",
         "--all-categories",
         "--dry-run",
     ])
     assert category_args.all_categories is True
     assert category_args.max_docs == 2
+
+
+def test_company_base_url_uses_arg_env_then_placeholder(monkeypatch):
+    parser = build_parser()
+
+    explicit_args = parser.parse_args([
+        "ingest-company-policies",
+        "--auth-cookie",
+        "COMPANY_AUTH=sample",
+        "--base-url",
+        "https://policy.example.test",
+        "--dry-run",
+    ])
+    assert _company_base_url(explicit_args) == "https://policy.example.test"
+
+    env_args = parser.parse_args(["ingest-company-policies", "--auth-cookie", "COMPANY_AUTH=sample", "--dry-run"])
+    monkeypatch.setenv("COMPANY_POLICY_BASE_URL", "https://env-policy.example.test")
+    assert _company_base_url(env_args) == "https://env-policy.example.test"
+
+    monkeypatch.delenv("COMPANY_POLICY_BASE_URL")
+    assert _company_base_url(env_args) == "https://example.com"

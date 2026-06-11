@@ -262,13 +262,13 @@ def test_run_chat_trace_returns_policy_citations_with_links_for_multiple_hits():
     class FakeStore:
         def search(self, query_embedding: list[float], *, top_k: int):
             first = PolicyChunk(
-                chunk_id="yungu-policy-2374-001",
-                doc_id="yungu-2374",
+                chunk_id="company-policy-2374-001",
+                doc_id="company-2374",
                 block_id="body-1",
                 text="员工年假规则以学校 HR 政策及知识库中的年休假条款为准。",
                 heading_path=["HR政策及知识库", "员工年休假条款"],
                 metadata={
-                    "source": "yungu_policy_system",
+                    "source": "company_policy_system",
                     "import_information_id": 2374,
                     "title": "员工年休假条款",
                     "policy_category_type_name": "HR政策及知识库",
@@ -276,13 +276,13 @@ def test_run_chat_trace_returns_policy_citations_with_links_for_multiple_hits():
                 },
             )
             second = PolicyChunk(
-                chunk_id="yungu-policy-2401-001",
-                doc_id="yungu-2401",
+                chunk_id="company-policy-2401-001",
+                doc_id="company-2401",
                 block_id="body-2",
                 text="新员工年假、适用对象和审批口径需要结合考勤制度一起判断。",
                 heading_path=["HR政策及知识库", "员工假勤补充说明"],
                 metadata={
-                    "source": "yungu_policy_system",
+                    "source": "company_policy_system",
                     "import_information_id": 2401,
                     "title": "员工假勤补充说明",
                     "policy_category_type_name": "HR政策及知识库",
@@ -301,11 +301,11 @@ def test_run_chat_trace_returns_policy_citations_with_links_for_multiple_hits():
     citations = [result["citation"] for result in response["results"]]
     assert [citation["citation_id"] for citation in citations] == ["[1]", "[2]"]
     assert citations[0]["title"] == "员工年休假条款"
-    assert citations[0]["url"] == "https://work.yungu.org/policyDetail/2374"
+    assert citations[0]["url"] == "https://example.com/policyDetail/2374"
     assert citations[0]["category"] == "HR政策及知识库"
     assert "相关来源" in response["answer"]
     assert "[1]" in response["answer"] and "[2]" in response["answer"]
-    assert "https://work.yungu.org/policyDetail/2374" in response["answer"]
+    assert "https://example.com/policyDetail/2374" in response["answer"]
 
     evidence = _step(response, "evidence_quality")
     first_block = evidence["details"]["context_blocks"][0]
@@ -323,21 +323,21 @@ def _discipline_chunk(*, chunk_id="discipline-rough-1", text=None, metadata=None
         "5. 破坏学校管理秩序行为 5.1旷工少于三天。"
     )
     base_metadata = {
-        "source": "yungu_policy_system",
+        "source": "company_policy_system",
         "import_information_id": 16,
-        "title": "云谷人守则-员工纪律制度",
-        "policy_category_type_name": "云谷人守则",
+        "title": "***公司人守则-员工纪律制度",
+        "policy_category_type_name": "***公司人守则",
         "section_title": "二类违规行为",
-        "source_url": "https://work.yungu.org/policyDetail/16",
+        "source_url": "https://example.com/policyDetail/16",
     }
     if metadata:
         base_metadata.update(metadata)
     return PolicyChunk(
         chunk_id=chunk_id,
-        doc_id="yungu-policy-16",
+        doc_id="company-policy-16",
         block_id=chunk_id,
         text=rough_text,
-        heading_path=["云谷人守则", "云谷人守则-员工纪律制度"],
+        heading_path=["***公司人守则", "***公司人守则-员工纪律制度"],
         metadata=base_metadata,
     )
 
@@ -369,7 +369,7 @@ def test_exact_clause_query_uses_hybrid_search_and_scopes_answer_to_clause_group
     assert "5. 破坏学校管理秩序行为" not in response["answer"]
     assert "检索方式：pgvector hybrid" in response["answer"]
     assert "内存向量检索 demo" not in response["answer"]
-    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
+    assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/16"
 
     evidence = _step(response, "evidence_quality")
     assert evidence["details"]["scope_guard"]["status"] == "ok"
@@ -385,16 +385,16 @@ def test_exact_clause_query_returns_no_answer_when_direct_evidence_is_missing():
                 SearchResult(
                     chunk=PolicyChunk(
                         chunk_id="mentor-unrelated",
-                        doc_id="yungu-policy-3000",
+                        doc_id="company-policy-3000",
                         block_id="mentor-unrelated",
                         text="导师制说明，讨论学生个别支持、家校联结和班级规划。",
                         heading_path=["中小学教育教学相关制度", "导师制"],
                         metadata={
-                            "source": "yungu_policy_system",
+                            "source": "company_policy_system",
                             "import_information_id": 3000,
-                            "title": "杭州云谷学校导师制",
+                            "title": "杭州***公司学校导师制",
                             "policy_category_type_name": "中小学教育教学相关制度",
-                            "source_url": "https://work.yungu.org/policyDetail/3000",
+                            "source_url": "https://example.com/policyDetail/3000",
                         },
                     ),
                     distance=0.01,
@@ -416,7 +416,7 @@ def test_exact_clause_query_returns_no_answer_when_direct_evidence_is_missing():
 
 def test_exact_section_query_prefers_definition_over_cross_reference():
     reference_text = (
-        "薪酬制度补充说明。二类违规行为，具体参见《云谷人守则——员工纪律制度》。"
+        "薪酬制度补充说明。二类违规行为，具体参见《***公司人守则——员工纪律制度》。"
         "员工对薪酬收入有疑义，请联系人力资源部申请复核。"
     )
     definition_text = (
@@ -434,10 +434,10 @@ def test_exact_section_query_prefers_definition_over_cross_reference():
                         chunk_id="salary-reference",
                         text=reference_text,
                         metadata={
-                            "title": "杭州云谷学校薪酬制度",
+                            "title": "杭州***公司学校薪酬制度",
                             "policy_category_type_name": "HR政策及知识库",
                             "import_information_id": 192,
-                            "source_url": "https://work.yungu.org/policyDetail/192",
+                            "source_url": "https://example.com/policyDetail/192",
                         },
                     ),
                     distance=0.01,
@@ -454,9 +454,9 @@ def test_exact_section_query_prefers_definition_over_cross_reference():
 
     assert "二类违规行为：指违反师德师风" in response["answer"]
     assert "具体参见" not in response["answer"]
-    assert "杭州云谷学校薪酬制度" not in response["answer"]
+    assert "杭州***公司学校薪酬制度" not in response["answer"]
     assert "（三）三类违规行为" not in response["answer"]
-    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
+    assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/16"
     evidence = _step(response, "evidence_quality")
     assert evidence["details"]["scope_guard"]["status"] == "ok"
 
@@ -486,7 +486,7 @@ def test_exact_section_query_deduplicates_sources_and_excludes_competing_section
     assert "（三）三类违规行为" not in response["answer"]
     assert "三类违规行为：指一般" not in response["answer"]
     assert len(response["results"]) == 1
-    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
+    assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/16"
     evidence = _step(response, "evidence_quality")
     assert evidence["details"]["citation_merge"]["removed_duplicates"] == 2
 
@@ -615,24 +615,24 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
                         doc_id="student-policy",
                         block_id="student-discipline",
                         text=student_text,
-                        heading_path=["云谷学校小学部红黄灯行为及处理办法"],
-                        metadata={"title": "云谷学校小学部红黄灯行为及处理办法", "policy_category_type_name": "中小学教育教学相关制度"},
+                        heading_path=["***公司学校小学部红黄灯行为及处理办法"],
+                        metadata={"title": "***公司学校小学部红黄灯行为及处理办法", "policy_category_type_name": "中小学教育教学相关制度"},
                     ),
                     distance=0.05,
                 ),
                 SearchResult(
                     chunk=PolicyChunk(
                         chunk_id="discipline-classification",
-                        doc_id="yungu-policy-16",
+                        doc_id="company-policy-16",
                         block_id="chunk-0004",
                         text=classification_text,
-                        heading_path=["云谷人守则-员工纪律制度"],
+                        heading_path=["***公司人守则-员工纪律制度"],
                         metadata={
-                            "source": "yungu_policy_system",
+                            "source": "company_policy_system",
                             "import_information_id": 16,
-                            "title": "云谷人守则-员工纪律制度",
-                            "policy_category_type_name": "云谷人守则",
-                            "source_url": "https://work.yungu.org/policyDetail/16",
+                            "title": "***公司人守则-员工纪律制度",
+                            "policy_category_type_name": "***公司人守则",
+                            "source_url": "https://example.com/policyDetail/16",
                         },
                     ),
                     distance=0.18,
@@ -640,16 +640,16 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
                 SearchResult(
                     chunk=PolicyChunk(
                         chunk_id="worktime-absenteeism",
-                        doc_id="yungu-policy-11",
+                        doc_id="company-policy-11",
                         block_id="chunk-0001",
                         text=absenteeism_text,
-                        heading_path=["云谷人守则-工作时间及假期管理制度"],
+                        heading_path=["***公司人守则-工作时间及假期管理制度"],
                         metadata={
-                            "source": "yungu_policy_system",
+                            "source": "company_policy_system",
                             "import_information_id": 11,
-                            "title": "云谷人守则-工作时间及假期管理制度",
-                            "policy_category_type_name": "云谷人守则",
-                            "source_url": "https://work.yungu.org/policyDetail/11",
+                            "title": "***公司人守则-工作时间及假期管理制度",
+                            "policy_category_type_name": "***公司人守则",
+                            "source_url": "https://example.com/policyDetail/11",
                         },
                     ),
                     distance=0.2,
@@ -716,22 +716,22 @@ def test_absenteeism_three_days_answer_does_not_reuse_under_three_classification
                 SearchResult(
                     chunk=PolicyChunk(
                         chunk_id="worktime-absenteeism",
-                        doc_id="yungu-policy-11",
+                        doc_id="company-policy-11",
                         block_id="chunk-0001",
                         text=penalty_text,
-                        heading_path=["云谷人守则-工作时间及假期管理制度"],
-                        metadata={"source": "yungu_policy_system", "import_information_id": 11, "title": "云谷人守则-工作时间及假期管理制度"},
+                        heading_path=["***公司人守则-工作时间及假期管理制度"],
+                        metadata={"source": "company_policy_system", "import_information_id": 11, "title": "***公司人守则-工作时间及假期管理制度"},
                     ),
                     distance=0.1,
                 ),
                 SearchResult(
                     chunk=PolicyChunk(
                         chunk_id="discipline-classification-under-three",
-                        doc_id="yungu-policy-16",
+                        doc_id="company-policy-16",
                         block_id="chunk-0004",
                         text=under_three_classification,
-                        heading_path=["云谷人守则-员工纪律制度"],
-                        metadata={"source": "yungu_policy_system", "import_information_id": 16, "title": "云谷人守则-员工纪律制度"},
+                        heading_path=["***公司人守则-员工纪律制度"],
+                        metadata={"source": "company_policy_system", "import_information_id": 16, "title": "***公司人守则-员工纪律制度"},
                     ),
                     distance=0.2,
                 ),
@@ -847,10 +847,10 @@ def test_in_memory_demo_answers_absenteeism_duration_query():
     assert "扣除旷工期间工资" in response["answer"]
     assert "给予记过处分" in response["answer"]
     assert "属于二类违规行为" in response["answer"]
-    assert "链接：https://work.yungu.org/policyDetail/11" in response["answer"]
-    assert "链接：https://work.yungu.org/policyDetail/16" in response["answer"]
-    assert response["results"][0]["citation"]["url"] == "https://work.yungu.org/policyDetail/11"
-    assert response["results"][1]["citation"]["url"] == "https://work.yungu.org/policyDetail/16"
+    assert "链接：https://example.com/policyDetail/11" in response["answer"]
+    assert "链接：https://example.com/policyDetail/16" in response["answer"]
+    assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/11"
+    assert response["results"][1]["citation"]["url"] == "https://example.com/policyDetail/16"
 
 
 def test_in_memory_demo_handles_absenteeism_penalty_typo_query():

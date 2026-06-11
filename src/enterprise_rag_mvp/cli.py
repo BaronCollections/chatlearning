@@ -7,13 +7,13 @@ from enterprise_rag_mvp.embedding_client import EmbeddingClient
 from enterprise_rag_mvp.pgvector_store import PgVectorStore
 from enterprise_rag_mvp.render import render_results
 from enterprise_rag_mvp.samples import sample_policy_chunks
-from enterprise_rag_mvp.yungu_importer import (
+from enterprise_rag_mvp.company_importer import (
     DEFAULT_POLICY_TYPE,
-    DEFAULT_YUNGU_BASE_URL,
-    YunguCategoryImportSummary,
-    YunguPolicyClient,
-    ingest_yungu_categories,
-    ingest_yungu_policies,
+    DEFAULT_COMPANY_BASE_URL,
+    CompanyCategoryImportSummary,
+    CompanyPolicyClient,
+    ingest_company_categories,
+    ingest_company_policies,
 )
 
 DEFAULT_DSN = "postgresql://127.0.0.1:5432/enterprise_rag_mvp"
@@ -46,20 +46,24 @@ def ingest_samples(args: argparse.Namespace) -> None:
     print(f"Ingested {len(chunks)} sample policy chunks.")
 
 
-def _yungu_session(args: argparse.Namespace) -> str:
-    session = args.session or os.getenv("YUNGU_SESSION", "")
-    if not session.strip():
-        raise ValueError("Yungu SESSION is required. Pass --session or set YUNGU_SESSION.")
-    return session.strip()
+def _company_auth_cookie(args: argparse.Namespace) -> str:
+    auth_cookie = args.auth_cookie or os.getenv("COMPANY_AUTH_COOKIE", "")
+    if not auth_cookie.strip():
+        raise ValueError("Company authentication cookie is required. Pass --auth-cookie or set COMPANY_AUTH_COOKIE.")
+    return auth_cookie.strip()
 
 
-def render_yungu_category_summary(summary: YunguCategoryImportSummary, *, dry_run: bool) -> str:
+def _company_base_url(args: argparse.Namespace) -> str:
+    return args.base_url or os.getenv("COMPANY_POLICY_BASE_URL", DEFAULT_COMPANY_BASE_URL)
+
+
+def render_company_category_summary(summary: CompanyCategoryImportSummary, *, dry_run: bool) -> str:
     stats = summary.stats
     action = "Prepared" if dry_run else "Ingested"
     chunk_label = "prepared" if dry_run else "stored"
     lines = [
         (
-            f"{action} Yungu policy categories: "
+            f"{action} Company policy categories: "
             f"categories={summary.category_count}, "
             f"documents_seen={stats.documents_seen}, "
             f"documents_imported={stats.documents_imported}, "
@@ -93,19 +97,19 @@ def render_yungu_category_summary(summary: YunguCategoryImportSummary, *, dry_ru
     return "\n".join(lines)
 
 
-def ingest_yungu(args: argparse.Namespace) -> None:
+def ingest_company(args: argparse.Namespace) -> None:
     max_docs = None if args.all else args.max_docs
-    yungu_client = YunguPolicyClient(
-        session=_yungu_session(args),
-        base_url=args.base_url,
+    company_client = CompanyPolicyClient(
+        auth_cookie=_company_auth_cookie(args),
+        base_url=_company_base_url(args),
         timeout=args.timeout,
     )
     embedding_client = EmbeddingClient(base_url=_embedding_url(args))
     store = PgVectorStore(_dsn(args))
     try:
         if args.all_categories:
-            summary = ingest_yungu_categories(
-                client=yungu_client,
+            summary = ingest_company_categories(
+                client=company_client,
                 embedding_client=embedding_client,
                 store=store,
                 policy_type=args.policy_type,
@@ -118,11 +122,11 @@ def ingest_yungu(args: argparse.Namespace) -> None:
                 keyword=args.keyword,
                 dry_run=args.dry_run,
             )
-            print(render_yungu_category_summary(summary, dry_run=args.dry_run))
+            print(render_company_category_summary(summary, dry_run=args.dry_run))
             return
 
-        stats = ingest_yungu_policies(
-            client=yungu_client,
+        stats = ingest_company_policies(
+            client=company_client,
             embedding_client=embedding_client,
             store=store,
             policy_type=args.policy_type,
@@ -137,11 +141,11 @@ def ingest_yungu(args: argparse.Namespace) -> None:
             dry_run=args.dry_run,
         )
     finally:
-        yungu_client.close()
+        company_client.close()
 
     action = "Prepared" if args.dry_run else "Ingested"
     print(
-        f"{action} Yungu policies: "
+        f"{action} Company policies: "
         f"documents_seen={stats.documents_seen}, "
         f"documents_imported={stats.documents_imported}, "
         f"documents_skipped={stats.documents_skipped}, "
@@ -169,23 +173,23 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser = subparsers.add_parser("ingest-samples", help="Embed and store sample policy chunks")
     ingest_parser.set_defaults(func=ingest_samples)
 
-    yungu_parser = subparsers.add_parser("ingest-yungu-policies", help="Fetch Yungu policy details, chunk, embed, and store them")
-    yungu_parser.add_argument("--session", help="Yungu SESSION cookie value. Prefer YUNGU_SESSION env var.")
-    yungu_parser.add_argument("--base-url", default=DEFAULT_YUNGU_BASE_URL)
-    yungu_parser.add_argument("--policy-type", type=int, default=DEFAULT_POLICY_TYPE)
-    yungu_parser.add_argument("--category-id", type=int)
-    yungu_parser.add_argument("--keyword", default="")
-    yungu_parser.add_argument("--page-size", type=int, default=20)
-    yungu_parser.add_argument("--max-docs", type=int, default=2, help="Safety default: only import 2 docs unless --all is set")
-    yungu_parser.add_argument("--max-pages", type=int)
-    yungu_parser.add_argument("--all", action="store_true", help="Import all matching policies instead of the safety-limited --max-docs")
-    yungu_parser.add_argument("--all-categories", action="store_true", help="Read policySystemTypeList and import each category with a category-level report")
-    yungu_parser.add_argument("--chunk-max-chars", type=int, default=1200)
-    yungu_parser.add_argument("--chunk-overlap-chars", type=int, default=150)
-    yungu_parser.add_argument("--embedding-batch-size", type=int, default=16)
-    yungu_parser.add_argument("--timeout", type=float, default=30.0)
-    yungu_parser.add_argument("--dry-run", action="store_true", help="Fetch and chunk, but do not call embedding or write pgvector")
-    yungu_parser.set_defaults(func=ingest_yungu)
+    company_parser = subparsers.add_parser("ingest-company-policies", help="Fetch Company policy details, chunk, embed, and store them")
+    company_parser.add_argument("--auth-cookie", help="Company authentication cookie header value. Prefer COMPANY_AUTH_COOKIE env var.")
+    company_parser.add_argument("--base-url", help=f"Policy system base URL. Default: COMPANY_POLICY_BASE_URL or {DEFAULT_COMPANY_BASE_URL}")
+    company_parser.add_argument("--policy-type", type=int, default=DEFAULT_POLICY_TYPE)
+    company_parser.add_argument("--category-id", type=int)
+    company_parser.add_argument("--keyword", default="")
+    company_parser.add_argument("--page-size", type=int, default=20)
+    company_parser.add_argument("--max-docs", type=int, default=2, help="Safety default: only import 2 docs unless --all is set")
+    company_parser.add_argument("--max-pages", type=int)
+    company_parser.add_argument("--all", action="store_true", help="Import all matching policies instead of the safety-limited --max-docs")
+    company_parser.add_argument("--all-categories", action="store_true", help="Read policySystemTypeList and import each category with a category-level report")
+    company_parser.add_argument("--chunk-max-chars", type=int, default=1200)
+    company_parser.add_argument("--chunk-overlap-chars", type=int, default=150)
+    company_parser.add_argument("--embedding-batch-size", type=int, default=16)
+    company_parser.add_argument("--timeout", type=float, default=30.0)
+    company_parser.add_argument("--dry-run", action="store_true", help="Fetch and chunk, but do not call embedding or write pgvector")
+    company_parser.set_defaults(func=ingest_company)
 
     search_parser = subparsers.add_parser("search", help="Search sample policy chunks")
     search_parser.add_argument("query")

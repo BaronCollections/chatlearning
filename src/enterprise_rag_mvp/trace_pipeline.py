@@ -171,7 +171,7 @@ def _embedding_model_choice() -> dict[str, Any]:
             {
                 "name": "bge-large-zh / text2vec",
                 "when_to_use": "只做中文短文本，且希望模型更小或已有历史评测基线时可以考虑。",
-                "why_not_now": "云谷制度包含英文标题和中英混排，M3 的多语言能力更贴合。",
+                "why_not_now": "***公司制度包含英文标题和中英混排，M3 的多语言能力更贴合。",
             },
         ],
     }
@@ -754,8 +754,8 @@ def _source_url(chunk: Any) -> str | None:
         return str(explicit_url)
 
     import_information_id = _metadata_value(metadata, "import_information_id", "importInformationId")
-    if import_information_id is not None and metadata.get("source") == "yungu_policy_system":
-        return "https://work.yungu.org/policyDetail/" + quote(str(import_information_id))
+    if import_information_id is not None and metadata.get("source") == "company_policy_system":
+        return "https://example.com/policyDetail/" + quote(str(import_information_id))
     return None
 
 

@@ -5,17 +5,17 @@ from enterprise_rag_mvp.regression_cases import RegressionCase
 def test_evaluate_regression_case_passes_expected_keywords_urls_and_doc_ids():
     case = RegressionCase(
         query="虚假报销怎么处罚",
-        expected_doc_ids=["yungu-policy-16"],
+        expected_doc_ids=["company-policy-16"],
         expected_keywords=["虚假报销", "记过处分"],
         forbidden_keywords=["学生红黄灯"],
-        expected_urls=["https://work.yungu.org/policyDetail/16"],
+        expected_urls=["https://example.com/policyDetail/16"],
     )
     response = {
         "answer": "虚假报销属于二类违规，处理结果包括记过处分。",
         "results": [
             {
-                "doc_id": "yungu-policy-16",
-                "citation": {"url": "https://work.yungu.org/policyDetail/16"},
+                "doc_id": "company-policy-16",
+                "citation": {"url": "https://example.com/policyDetail/16"},
             }
         ],
     }
@@ -32,10 +32,10 @@ def test_evaluate_regression_case_passes_expected_keywords_urls_and_doc_ids():
 def test_evaluate_regression_case_reports_missing_and_forbidden_signals():
     case = RegressionCase(
         query="二类违规是什么",
-        expected_doc_ids=["yungu-policy-16"],
+        expected_doc_ids=["company-policy-16"],
         expected_keywords=["比较严重的违规行为"],
         forbidden_keywords=["三类违规行为：指一般"],
-        expected_urls=["https://work.yungu.org/policyDetail/16"],
+        expected_urls=["https://example.com/policyDetail/16"],
     )
     response = {"answer": "三类违规行为：指一般的违规行为。", "results": []}
 

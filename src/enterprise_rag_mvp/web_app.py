@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from enterprise_rag_mvp.bad_cases import ALLOWED_FEEDBACK_TYPES, append_bad_case_record, build_bad_case_record
 from enterprise_rag_mvp.cli import DEFAULT_DSN, DEFAULT_EMBEDDING_URL
-from enterprise_rag_mvp.embedding_client import EmbeddingClient
+from enterprise_rag_mvp.embedding_client import DeterministicEmbeddingClient, EmbeddingClient
 from enterprise_rag_mvp.pgvector_store import PgVectorStore
 from enterprise_rag_mvp.reranker_client import RerankerClient
 from enterprise_rag_mvp.trace_pipeline import run_chat_trace
@@ -56,8 +56,20 @@ def _web_dir() -> Path:
     return Path(__file__).resolve().parent / "web"
 
 
+def _embedding_client_from_env() -> EmbeddingClient | DeterministicEmbeddingClient:
+    provider = os.getenv("RAG_EMBEDDING_PROVIDER", "http").strip().lower()
+    if provider in {"local", "deterministic", "demo"}:
+        return DeterministicEmbeddingClient()
+    if provider in {"", "http", "remote", "external", "bge", "bge-m3"}:
+        return EmbeddingClient(base_url=os.getenv("EMBEDDING_SERVICE_URL", DEFAULT_EMBEDDING_URL))
+    raise ValueError(
+        "unsupported RAG_EMBEDDING_PROVIDER; expected one of "
+        "http, remote, external, bge, bge-m3, local, deterministic, demo"
+    )
+
+
 def _default_runner(query: str, top_k: int) -> dict[str, Any]:
-    embedding_client = EmbeddingClient(base_url=os.getenv("EMBEDDING_SERVICE_URL", DEFAULT_EMBEDDING_URL))
+    embedding_client = _embedding_client_from_env()
     store = None
     if os.getenv("RAG_DISABLE_PGVECTOR", "false").lower() not in {"1", "true", "yes", "on"}:
         store = PgVectorStore(os.getenv("RAG_DATABASE_DSN", DEFAULT_DSN))
@@ -73,13 +85,17 @@ def create_app(
 ) -> FastAPI:
     runner = chat_runner or _default_runner
     feedback_path = Path(bad_case_path or os.getenv("RAG_BAD_CASE_PATH", "data/bad_cases.jsonl"))
-    app = FastAPI(title="Enterprise RAG Trace Chat")
+    app = FastAPI(title="Enterprise RAG Trace Chat", docs_url="/api/docs", redoc_url="/api/redoc")
     web_dir = _web_dir()
     app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (web_dir / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/docs", response_class=HTMLResponse)
+    def docs() -> str:
+        return (web_dir / "docs.html").read_text(encoding="utf-8")
 
     @app.post("/api/chat")
     def chat(request: ChatRequest) -> dict[str, Any]:
