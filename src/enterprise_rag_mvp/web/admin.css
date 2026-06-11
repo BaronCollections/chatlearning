@@ -200,6 +200,44 @@ textarea {
   margin-bottom: 8px;
 }
 
+.chunk-preview-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f8fafc;
+}
+
+.chunk-preview-item header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.chunk-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #e0f2fe;
+  color: #075985;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chunk-meta {
+  margin-bottom: 6px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.chunk-preview-item p {
+  margin: 0;
+  line-height: 1.6;
+}
+
 @media (max-width: 900px) {
   .admin-shell { width: min(100vw - 24px, 1280px); }
   .admin-topbar { flex-direction: column; }

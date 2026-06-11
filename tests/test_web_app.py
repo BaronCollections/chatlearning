@@ -26,6 +26,161 @@ def test_docs_page_serves_standalone_documentation_shell():
     assert "docs.js" in response.text
 
 
+def test_admin_page_serves_management_console_shell():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert "RAG Management Console" in response.text
+    assert "documentPreviewForm" in response.text
+    assert "admin.js" in response.text
+
+
+def test_admin_overview_reports_manageable_surfaces_without_secret_values(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_SERVICE_URL", "https://embedding.example.test/private")
+    monkeypatch.setenv("RERANKER_SERVICE_URL", "https://reranker.example.test/private")
+    monkeypatch.setenv("RAG_DISABLE_PGVECTOR", "true")
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
+
+    response = client.get("/api/admin/overview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["knowledge_bases"][0]["id"] == "company_policy_system"
+    assert body["interfaces"]["chat_trace"]["path"] == "/api/chat"
+    assert body["interfaces"]["feedback"]["path"] == "/api/feedback"
+    assert body["integrations"]["embedding"]["status"] == "configured"
+    assert body["integrations"]["pgvector"]["status"] == "disabled"
+    assert body["integrations"]["reranker"]["status"] == "configured"
+    assert "private" not in response.text
+
+
+def test_admin_document_preview_parses_html_and_reports_quality():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
+
+    response = client.post(
+        "/api/admin/document-preview",
+        json={
+            "source_name": "员工纪律制度",
+            "file_name": "policy.html",
+            "content_type": "text/html",
+            "text": "<h1>员工纪律制度</h1><p>二类违规行为需要记过处分。</p>",
+            "max_chars": 20,
+            "overlap_chars": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_type"] == "html"
+    assert body["quality"]["status"] == "success"
+    assert body["quality"]["parser_name"] == "html_builtin"
+    assert body["element_count"] == 2
+    assert body["chunk_count"] >= 1
+    assert body["elements"][0]["heading_path"] == ["员工纪律制度"]
+    assert body["chunking_quality"]["status"] == "success"
+    assert body["chunking_quality"]["chunking_strategy"] in {"policy_clause_group", "fixed_window_fallback"}
+
+
+def test_admin_document_preview_accepts_plain_text_pasted_with_html_content_type():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
+
+    response = client.post(
+        "/api/admin/document-preview",
+        json={
+            "source_name": "员工纪律制度",
+            "file_name": "policy.html",
+            "content_type": "text/html",
+            "text": "示例机构员工纪律制度\nExample School Employee Disciplinary Rules\n\n一、目的\n为落实示例学校的使命制定本制度。",
+            "max_chars": 1200,
+            "overlap_chars": 150,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_type"] == "html"
+    assert body["quality"]["status"] == "success"
+    assert body["element_count"] >= 2
+    assert body["chunk_count"] >= 1
+    assert "示例机构员工纪律制度" in body["chunks"][0]["text"]
+    assert body["chunking_quality"]["status"] == "success"
+
+
+def test_admin_document_preview_uses_clause_group_chunks_for_policy_text():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
+
+    response = client.post(
+        "/api/admin/document-preview",
+        json={
+            "source_name": "员工纪律制度",
+            "file_name": "policy.html",
+            "content_type": "text/html",
+            "text": """
+            示例机构员工纪律制度
+            四、违规行为
+            （二）二类违规行为
+            二类违规行为：指比较严重的违规行为。
+            4. 破坏学校管理秩序行为
+            4.1渎职给学校造成较大损失。
+            4.2旷工少于三天。
+            4.3 使用未经批准的教材上课，给学校带来较大风险。
+            （三）三类违规行为
+            三类违规行为：指一般的违规行为。
+            5. 破坏学校管理秩序行为
+            5.1上课迟到、早退和随意停课。
+            五、违规行为相应处理
+            1. 违规行为相应处理
+            1.2二类违规行为：予以记过处分，自处分生效日起一年内不得调薪。
+            """,
+            "max_chars": 1200,
+            "overlap_chars": 150,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chunking_quality"]["chunking_strategy"] == "policy_clause_group"
+    assert body["chunking_quality"]["coverage_status"] == "complete"
+    assert body["chunking_quality"]["element_coverage_status"] == "complete"
+    assert body["chunking_quality"]["source_element_count"] > 0
+    assert body["chunking_quality"]["covered_element_count"] == body["chunking_quality"]["source_element_count"]
+    assert body["chunking_quality"]["uncovered_element_count"] == 0
+    assert body["chunking_quality"]["provenance_missing_count"] == 0
+    assert body["chunking_quality"]["retrieval_provenance_missing_count"] == 0
+    assert body["chunk_preview_limit"] == 100
+    assert body["chunk_preview_count"] == body["chunk_count"]
+    assert body["chunk_type_counts"]["clause_group"] >= 1
+    assert body["chunk_role_counts"]["retrieval"] >= 1
+    group = next(chunk for chunk in body["chunks"] if chunk["metadata"].get("clause_title") == "4. 破坏学校管理秩序行为")
+    assert group["metadata"]["chunk_type"] == "clause_group"
+    assert group["metadata"]["violation_level"] == "category_2"
+    assert group["metadata"]["clause_range"] == "4.1-4.3"
+    assert group["metadata"]["element_ids"]
+    assert group["metadata"]["element_range"]["start"] <= group["metadata"]["element_range"]["end"]
+    assert group["heading_path"] == ["员工纪律制度", "二类违规行为", "4. 破坏学校管理秩序行为"]
+    assert "5.1上课迟到" not in group["text"]
+    action = next(chunk for chunk in body["chunks"] if chunk["metadata"].get("action_target") == "category_2")
+    assert action["metadata"]["chunk_type"] == "action_clause"
+    assert action["metadata"]["element_ids"]
+    assert action["metadata"]["element_range"]["start"] <= action["metadata"]["element_range"]["end"]
+    assert action["heading_path"] == ["员工纪律制度", "五、违规行为相应处理", "1.2 二类违规行为"]
+
+
+def test_admin_document_preview_rejects_blank_input():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
+
+    response = client.post(
+        "/api/admin/document-preview",
+        json={"source_name": "空文档", "file_name": "empty.txt", "content_type": "text/plain", "text": "  "},
+    )
+
+    assert response.status_code == 422
+    assert "text must contain non-whitespace content" in response.text
+
+
 def test_chat_endpoint_returns_trace_response():
     def fake_runner(query: str, top_k: int):
         return {

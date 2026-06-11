@@ -98,6 +98,49 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert ".connector-line" not in app_css
 
 
+def test_admin_console_is_a_separate_management_surface():
+    index_html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    admin_html = (WEB_DIR / "admin.html").read_text(encoding="utf-8")
+    admin_js = (WEB_DIR / "admin.js").read_text(encoding="utf-8")
+    admin_css = (WEB_DIR / "admin.css").read_text(encoding="utf-8")
+
+    assert 'href="/admin"' in index_html
+    assert "documentPreviewForm" not in index_html
+    assert "RAG Management Console" in admin_html
+    assert "knowledgeBaseList" in admin_html
+    assert "documentPreviewForm" in admin_html
+    assert "interfaceStatusList" in admin_html
+    assert "loadManagementOverview" in admin_js
+    assert "submitDocumentPreview" in admin_js
+    assert "chunking_quality" in admin_js
+    assert "coverage_status" in admin_js
+    assert "uncovered_ranges" in admin_js
+    assert "heading_path" in admin_js
+    assert "clause_range" in admin_js
+    assert "chunk_role" in admin_js
+    assert "semantic_type" in admin_js
+    assert "chunk_type_counts" in admin_js
+    assert "chunk_language_counts" in admin_js
+    assert "chunk_role_counts" in admin_js
+    assert "renderCountMap" in admin_js
+    assert "english_retrieval_chunk_count" in admin_js
+    assert "orphan_title_count" in admin_js
+    assert "mixed_language_chunk_count" in admin_js
+    assert "element_coverage_status" in admin_js
+    assert "source_element_count" in admin_js
+    assert "covered_element_count" in admin_js
+    assert "uncovered_element_count" in admin_js
+    assert "provenance_missing_count" in admin_js
+    assert "retrieval_provenance_missing_count" in admin_js
+    assert "uncovered_elements" in admin_js
+    assert "element_range" in admin_js
+    assert "/api/admin/overview" in admin_js
+    assert "/api/admin/document-preview" in admin_js
+    assert ".admin-shell" in admin_css
+    assert ".management-grid" in admin_css
+    assert ".preview-results" in admin_css
+
+
 def test_common_questions_include_brief_answers_and_are_deduplicated():
     app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
     app_css = (WEB_DIR / "app.css").read_text(encoding="utf-8")

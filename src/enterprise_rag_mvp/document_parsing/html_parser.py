@@ -138,6 +138,25 @@ class _StructuredHTMLExtractor(HTMLParser):
         )
 
 
+def _plain_text_elements(raw_html: str) -> list[ParsedElement]:
+    text = normalize_whitespace(html.unescape(re.sub(r"<[^>]+>", " ", raw_html)))
+    if not text:
+        return []
+    parts = [part.strip() for part in re.split(r"(?:\r?\n){2,}|(?<=。)\s+", raw_html) if part.strip()]
+    normalized_parts = [normalize_whitespace(html.unescape(re.sub(r"<[^>]+>", " ", part))) for part in parts]
+    paragraphs = [part for part in normalized_parts if part]
+    if not paragraphs:
+        paragraphs = [text]
+    return [
+        ParsedElement(
+            element_id=f"element-{index:04d}",
+            element_type="paragraph",
+            text=paragraph,
+        )
+        for index, paragraph in enumerate(paragraphs, start=1)
+    ]
+
+
 class HtmlDocumentParser:
     def parse(self, source: DocumentSource) -> ParsedDocument:
         raw_html = source.text
@@ -149,6 +168,8 @@ class HtmlDocumentParser:
         extractor.close()
         elements = extractor.elements
         warnings: list[str] = []
+        if not elements:
+            elements = _plain_text_elements(raw_html)
         status = "success"
         if not elements:
             status = "failed"

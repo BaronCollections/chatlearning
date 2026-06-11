@@ -113,12 +113,45 @@ def test_detail_to_policy_chunks_splits_violation_clause_groups():
     assert "3. 侵犯学校权益行为" not in clause_chunk.text
     assert "5. 破坏学校管理秩序行为" not in clause_chunk.text
 
-    section_chunk = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "section_overview")
+    section_chunk = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "violation_category_overview")
+    assert section_chunk.metadata["legacy_chunk_type"] == "section_overview"
     assert section_chunk.metadata["section_title"] == "二类违规行为"
     assert "二类违规行为：指违反师德师风" in section_chunk.text
     assert "4. 弄虚作假行为" in section_chunk.text
     assert "（三）三类违规行为" not in section_chunk.text
 
+
+def test_detail_to_policy_chunks_includes_structured_disciplinary_action_chunks():
+    body = """
+    <p>四、违规行为</p>
+    <p>（二）二类违规行为</p>
+    <p>二类违规行为：指比较严重的违规行为。</p>
+    <p>4. 破坏学校管理秩序行为</p>
+    <p>4.1渎职给学校造成较大损失。</p>
+    <p>4.2旷工少于三天。</p>
+    <p>五、违规行为相应处理</p>
+    <p>1. 违规行为相应处理</p>
+    <p>1.1一类违规行为：解除劳动合同。</p>
+    <p>1.2二类违规行为：予以记过处分，自处分生效日起一年内不得调薪。</p>
+    <p>1.3三类违规行为：予以书面或口头警告。</p>
+    """
+
+    chunks = detail_to_policy_chunks(
+        {
+            "importInformationId": 16,
+            "cnTitle": "员工纪律制度",
+            "policyCategoryTypeName": "HR政策及知识库",
+            "body": body,
+        }
+    )
+
+    action = next(chunk for chunk in chunks if chunk.metadata.get("action_target") == "category_2")
+    assert action.metadata["chunk_type"] == "action_clause"
+    assert action.metadata["chunking_strategy"] == "policy_clause_group"
+    assert action.heading_path == ["HR政策及知识库", "员工纪律制度", "五、违规行为相应处理", "1.2 二类违规行为"]
+    assert "1.2二类违规行为" in action.text
+    assert "1.1一类违规行为" not in action.text
+    assert "1.3三类违规行为" not in action.text
 
 def test_company_policy_client_fetches_list_and_detail_and_rejects_login_failure():
     requests = []

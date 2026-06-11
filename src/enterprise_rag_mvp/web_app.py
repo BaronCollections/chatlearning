@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from enterprise_rag_mvp.bad_cases import ALLOWED_FEEDBACK_TYPES, append_bad_case_record, build_bad_case_record
 from enterprise_rag_mvp.cli import DEFAULT_DSN, DEFAULT_EMBEDDING_URL
 from enterprise_rag_mvp.embedding_client import DeterministicEmbeddingClient, EmbeddingClient
+from enterprise_rag_mvp.management import build_management_overview, preview_document_parse
 from enterprise_rag_mvp.pgvector_store import PgVectorStore
 from enterprise_rag_mvp.reranker_client import RerankerClient
 from enterprise_rag_mvp.trace_pipeline import run_chat_trace
@@ -50,6 +51,29 @@ class FeedbackRequest(BaseModel):
         if normalized not in ALLOWED_FEEDBACK_TYPES:
             raise ValueError(f"unsupported feedback_type: {normalized}")
         return normalized
+
+
+class DocumentPreviewRequest(BaseModel):
+    source_name: str = Field(min_length=1)
+    file_name: str | None = None
+    content_type: str | None = None
+    text: str = Field(min_length=1)
+    max_chars: int = Field(default=1200, ge=1, le=20000)
+    overlap_chars: int = Field(default=150, ge=0, le=5000)
+
+    @field_validator("source_name")
+    @classmethod
+    def source_name_must_contain_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source_name must contain non-whitespace text")
+        return value.strip()
+
+    @field_validator("text")
+    @classmethod
+    def text_must_contain_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must contain non-whitespace content")
+        return value
 
 
 def _web_dir() -> Path:
@@ -96,6 +120,28 @@ def create_app(
     @app.get("/docs", response_class=HTMLResponse)
     def docs() -> str:
         return (web_dir / "docs.html").read_text(encoding="utf-8")
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin() -> str:
+        return (web_dir / "admin.html").read_text(encoding="utf-8")
+
+    @app.get("/api/admin/overview")
+    def admin_overview() -> dict[str, Any]:
+        return build_management_overview()
+
+    @app.post("/api/admin/document-preview")
+    def admin_document_preview(request: DocumentPreviewRequest) -> dict[str, Any]:
+        try:
+            return preview_document_parse(
+                source_name=request.source_name,
+                file_name=request.file_name,
+                content_type=request.content_type,
+                text=request.text,
+                max_chars=request.max_chars,
+                overlap_chars=request.overlap_chars,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"message": "Invalid document preview payload", "error": str(exc)}) from exc
 
     @app.post("/api/chat")
     def chat(request: ChatRequest) -> dict[str, Any]:

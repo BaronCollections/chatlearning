@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
 
-from enterprise_rag_mvp.document_parsing import DocumentParserRouter, DocumentSource, clean_html_to_text, normalize_whitespace, parsed_document_text
+from enterprise_rag_mvp.document_chunking import DocumentChunk, chunk_parsed_document, fixed_window_chunks
+from enterprise_rag_mvp.document_parsing import DocumentParserRouter, DocumentSource, clean_html_to_text, parsed_document_text
 from enterprise_rag_mvp.models import PolicyChunk
 
 DEFAULT_COMPANY_BASE_URL = "https://example.com"
@@ -93,111 +93,7 @@ class StoreLike(Protocol):
 
 
 def chunk_text(text: str, *, max_chars: int = 1200, overlap_chars: int = 150) -> list[str]:
-    normalized = normalize_whitespace(text)
-    if not normalized:
-        return []
-    if max_chars <= 0:
-        raise ValueError("max_chars must be positive")
-    if overlap_chars < 0:
-        raise ValueError("overlap_chars must be non-negative")
-    if overlap_chars >= max_chars:
-        raise ValueError("overlap_chars must be smaller than max_chars")
-
-    chunks: list[str] = []
-    start = 0
-    while start < len(normalized):
-        end = min(len(normalized), start + max_chars)
-        if end < len(normalized):
-            sentence_boundary = max(normalized.rfind(mark, start, end) for mark in ["。", "；", ";", ".", "\n"])
-            if sentence_boundary > start + max_chars // 2:
-                end = sentence_boundary + 1
-        chunk = normalized[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(normalized):
-            break
-        start = max(0, end - overlap_chars)
-    return chunks
-
-
-_SECTION_HEADING_RE = re.compile(r"(（[一二三四五六七八九十]+）\s*([^（）]{1,40}?违规行为))")
-_CLAUSE_GROUP_RE = re.compile(r"(?<![\d.])(\d{1,2})\.\s*(?!\d)([^。；;\d]{2,60}?)(?=(?:\s*\d+\.\d)|[:：])")
-
-
-def _normalize_title(title: str) -> str:
-    return normalize_whitespace(title).strip(" ：:")
-
-
-def _structured_policy_blocks(text: str) -> list[dict[str, Any]]:
-    normalized = normalize_whitespace(text)
-    if not normalized:
-        return []
-
-    section_matches = list(_SECTION_HEADING_RE.finditer(normalized))
-    if not section_matches:
-        return []
-
-    blocks: list[dict[str, Any]] = []
-    for section_index, section_match in enumerate(section_matches, start=1):
-        section_start = section_match.start()
-        section_end = section_matches[section_index].start() if section_index < len(section_matches) else len(normalized)
-        section_text = normalized[section_start:section_end].strip()
-        section_marker = _normalize_title(section_match.group(1))
-        section_title = _normalize_title(section_match.group(2))
-        if not section_text or not section_title:
-            continue
-
-        clause_matches = list(_CLAUSE_GROUP_RE.finditer(section_text))
-        clause_titles: list[str] = []
-        clause_blocks: list[dict[str, Any]] = []
-        for clause_index, clause_match in enumerate(clause_matches, start=1):
-            clause_no = clause_match.group(1)
-            clause_title_text = _normalize_title(clause_match.group(2))
-            clause_title = f"{clause_no}. {clause_title_text}"
-            next_start = clause_matches[clause_index].start() if clause_index < len(clause_matches) else len(section_text)
-            clause_text = section_text[clause_match.start():next_start].strip()
-            if not clause_text:
-                continue
-            sub_numbers = [f"{clause_no}.{item}" for item in re.findall(rf"(?<!\d){re.escape(clause_no)}\.(\d+)", clause_text)]
-            clause_range = None
-            if sub_numbers:
-                clause_range = f"{sub_numbers[0]}-{sub_numbers[-1]}" if len(sub_numbers) > 1 else sub_numbers[0]
-            clause_titles.append(clause_title)
-            clause_blocks.append(
-                {
-                    "text": clause_text,
-                    "chunk_type": "clause_group",
-                    "section_title": section_title,
-                    "section_marker": section_marker,
-                    "clause_title": clause_title,
-                    "clause_no": clause_no,
-                    "clause_range": clause_range,
-                    "section_path": [section_title, clause_title],
-                    "start_marker": clause_title,
-                    "end_marker": None,
-                }
-            )
-
-        if clause_matches:
-            overview_end = clause_matches[0].start()
-            overview_intro = section_text[:overview_end].strip()
-            overview_text = normalize_whitespace(" ".join([overview_intro, *clause_titles]))
-        else:
-            overview_text = section_text
-        if overview_text:
-            blocks.append(
-                {
-                    "text": overview_text,
-                    "chunk_type": "section_overview",
-                    "section_title": section_title,
-                    "section_marker": section_marker,
-                    "section_path": [section_title],
-                    "start_marker": section_marker,
-                    "end_marker": None,
-                }
-            )
-        blocks.extend(clause_blocks)
-    return blocks
+    return fixed_window_chunks(text, max_chars=max_chars, overlap_chars=overlap_chars)
 
 
 def _first_non_empty(*values: Any, fallback: str = "") -> str:
@@ -342,6 +238,42 @@ def _parse_attachment_chunks(
     return chunks, {"status": status, "parsed_count": parsed_count, "warning_count": warning_count}
 
 
+def _policy_chunk_heading_path(base_heading_path: list[str], title: str, document_chunk: DocumentChunk) -> list[str]:
+    chunk_path = list(document_chunk.heading_path)
+    if chunk_path and chunk_path[0] == title:
+        chunk_path = chunk_path[1:]
+    return [*base_heading_path, *chunk_path] or [title]
+
+
+def _policy_chunk_block_id(document_chunk: DocumentChunk, index: int) -> str:
+    chunk_type = str(document_chunk.metadata.get("chunk_type") or "chunk")
+    return f"{chunk_type}-{index:04d}"
+
+
+def _document_chunks_to_policy_chunks(
+    *,
+    doc_id: str,
+    title: str,
+    base_heading_path: list[str],
+    base_metadata: dict[str, Any],
+    document_chunks: list[DocumentChunk],
+) -> list[PolicyChunk]:
+    chunks: list[PolicyChunk] = []
+    for index, document_chunk in enumerate(document_chunks, start=1):
+        block_id = _policy_chunk_block_id(document_chunk, index)
+        chunks.append(
+            PolicyChunk(
+                chunk_id=f"{doc_id}-chunk-{index:04d}",
+                doc_id=doc_id,
+                block_id=block_id,
+                text=document_chunk.text,
+                heading_path=_policy_chunk_heading_path(base_heading_path, title, document_chunk),
+                metadata={**base_metadata, **document_chunk.metadata},
+            )
+        )
+    return chunks
+
+
 def detail_to_policy_chunks(
     detail: dict[str, Any],
     *,
@@ -420,42 +352,25 @@ def detail_to_policy_chunks(
     }
     base_metadata = {key: value for key, value in base_metadata.items() if value is not None}
 
-    structured_blocks = _structured_policy_blocks(text)
-    if structured_blocks:
-        chunks: list[PolicyChunk] = []
-        for index, block in enumerate(structured_blocks, start=1):
-            block_type = block.get("chunk_type") or "structured"
-            block_id = f"{block_type}-{index:04d}"
-            section_path = list(block.get("section_path") or [])
-            chunk_heading = [*heading_path, *section_path] or [title]
-            metadata = {**base_metadata, **{key: value for key, value in block.items() if key != "text" and value is not None}}
-            chunks.append(
-                PolicyChunk(
-                    chunk_id=f"{doc_id}-{block_id}",
-                    doc_id=doc_id,
-                    block_id=block_id,
-                    text=block["text"],
-                    heading_path=chunk_heading,
-                    metadata=metadata,
-                )
-            )
-        return chunks + attachment_chunks
-
-    chunks = chunk_text(text, max_chars=max_chars, overlap_chars=overlap_chars)
-    if not chunks:
+    chunked_body = chunk_parsed_document(parsed_body, max_chars=max_chars, overlap_chars=overlap_chars)
+    if not chunked_body.chunks:
         return []
 
-    body_chunks = [
-        PolicyChunk(
-            chunk_id=f"{doc_id}-chunk-{index:04d}",
-            doc_id=doc_id,
-            block_id=f"chunk-{index:04d}",
-            text=chunk,
-            heading_path=heading_path or [title],
-            metadata={**base_metadata, "chunk_type": "fixed_window"},
-        )
-        for index, chunk in enumerate(chunks, start=1)
-    ]
+    chunk_quality_metadata = {
+        "chunker_name": chunked_body.quality.chunker_name,
+        "chunker_version": chunked_body.quality.chunker_version,
+        "chunking_status": chunked_body.quality.status,
+        "chunking_strategy": chunked_body.quality.chunking_strategy,
+        "chunking_fallback_reason": chunked_body.quality.fallback_reason,
+        "chunking_boundary_confidence": chunked_body.quality.boundary_confidence,
+    }
+    body_chunks = _document_chunks_to_policy_chunks(
+        doc_id=doc_id,
+        title=title,
+        base_heading_path=heading_path or [title],
+        base_metadata={**base_metadata, **{key: value for key, value in chunk_quality_metadata.items() if value is not None}},
+        document_chunks=chunked_body.chunks,
+    )
     return body_chunks + attachment_chunks
 
 

@@ -46,6 +46,32 @@ def test_html_document_parser_outputs_elements_and_quality_report():
     assert "alert" not in parsed_document_text(parsed)
 
 
+def test_html_document_parser_keeps_pasted_plain_text_as_paragraphs():
+    parser = HtmlDocumentParser()
+
+    parsed = parser.parse(
+        DocumentSource(
+            source_id="body-plain",
+            source_name="员工纪律制度",
+            content_type="text/html",
+            text="""
+            示例机构员工纪律制度
+            Example School Employee Disciplinary Rules
+
+            一、目的
+            为落实示例学校的使命、愿景和文化理念，根据有关法律法规和学校实际情况制定本制度。
+            """,
+        )
+    )
+
+    assert parsed.quality.status == "success"
+    assert parsed.quality.parser_name == "html_builtin"
+    assert parsed.quality.element_count >= 2
+    assert parsed.elements[0].element_type == "paragraph"
+    assert "示例机构员工纪律制度" in parsed_document_text(parsed)
+    assert "一、目的" in parsed_document_text(parsed)
+
+
 def test_parser_router_returns_actionable_report_for_unconfigured_heavy_formats():
     router = DocumentParserRouter()
 
