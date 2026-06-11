@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RAG Management Console</title>
+    <link rel="stylesheet" href="/static/admin.css" />
+  </head>
+  <body>
+    <main class="admin-shell">
+      <header class="admin-topbar">
+        <div>
+          <h1>RAG Management Console</h1>
+          <p>管理知识库状态、接口连通性和文档解析预览。</p>
+        </div>
+        <nav class="admin-nav" aria-label="页面导航">
+          <a href="/">问答</a>
+          <a href="/docs">文档</a>
+        </nav>
+      </header>
+
+      <section class="management-grid" aria-label="管理概览">
+        <article class="management-panel">
+          <h2>知识库</h2>
+          <div id="knowledgeBaseList" class="status-list">加载中...</div>
+        </article>
+        <article class="management-panel">
+          <h2>接口</h2>
+          <div id="interfaceStatusList" class="status-list">加载中...</div>
+        </article>
+        <article class="management-panel">
+          <h2>集成状态</h2>
+          <div id="integrationStatusList" class="status-list">加载中...</div>
+        </article>
+      </section>
+
+      <section class="preview-section" aria-label="文档解析预览">
+        <form id="documentPreviewForm" class="preview-form">
+          <div class="form-row">
+            <label>
+              文档名称
+              <input id="sourceNameInput" name="source_name" value="员工纪律制度" />
+            </label>
+            <label>
+              文件名
+              <input id="fileNameInput" name="file_name" value="policy.html" />
+            </label>
+            <label>
+              Content-Type
+              <input id="contentTypeInput" name="content_type" value="text/html" />
+            </label>
+          </div>
+          <div class="form-row compact">
+            <label>
+              chunk 最大字符数
+              <input id="maxCharsInput" name="max_chars" type="number" min="1" max="20000" value="1200" />
+            </label>
+            <label>
+              overlap 字符数
+              <input id="overlapCharsInput" name="overlap_chars" type="number" min="0" max="5000" value="150" />
+            </label>
+          </div>
+          <label class="text-field">
+            原始文本 / HTML
+            <textarea id="documentTextInput" name="text" rows="10"><h1>员工纪律制度</h1><p>二类违规行为需要记过处分。</p></textarea>
+          </label>
+          <button type="submit">预览解析</button>
+        </form>
+        <div id="previewResults" class="preview-results" aria-live="polite">提交后会展示解析质量、元素和 chunk。</div>
+      </section>
+    </main>
+    <script src="/static/admin.js"></script>
+  </body>
+</html>

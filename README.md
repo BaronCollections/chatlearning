@@ -16,7 +16,7 @@ RAG / Agent 学习工作台
 + 回归评测与坏例反馈
 ```
 
-它还不是完整的 K12 教学资料上传服务，也还没有实现 Dify External Knowledge API、Milvus、文档 CRUD、API Key 鉴权和生产级文件解析集群。下面会明确列出已经具备的能力和缺口。
+它会明确区分“已经落地的能力”和“可选扩展方向”，避免把规划中的能力写成已上线能力。
 
 ## 技术栈
 
@@ -352,28 +352,9 @@ DocumentSource
 - 图片和扫描件：PaddleOCR 或企业 OCR 服务。
 - 页码、bbox、OCR confidence、跨页表格、人工复核队列。
 
-## 和完整 K12 RAG Service 相比缺少什么
+## 可选：Dify 外部知识库协议
 
-你给的 K12 样例是完整资料上传和检索服务。对照那个目标，我们当前还缺这些能力：
-
-| 能力 | 当前状态 | 建议 |
-|---|---|---|
-| Dify External Knowledge API | 未实现 | 增加 `POST /retrieval`，按 Dify records 协议返回 |
-| 知识库 CRUD | 未实现 | 增加 knowledge_base 模块、API Key、权限边界 |
-| 文档上传 API | 未实现 | 增加 document 模块，支持 file_url / upload / status |
-| Milvus | 未使用 | 当前是 pgvector；如果数据量大或要多租户高并发，可引入 Milvus |
-| SQLAlchemy async + Alembic | 未使用 | 当前是 SQL schema + psycopg；生产服务建议迁移到迁移管理 |
-| API Key 鉴权 | 未实现 | 需要对管理 API 和检索 API 分开鉴权 |
-| 文件转 Markdown 服务 | 未接入 | 当前只有解析骨架；可接 Docling/Unstructured/企业解析服务 |
-| 生产 OCR | 未接入 | 图片、扫描 PDF 需要 PaddleOCR 或专用 OCR 服务 |
-| 权限过滤 | 待接入 | metadata 里要有 audience、tenant、user_scope，检索层强过滤 |
-| 增量同步 | 待接入 | 增加 content_hash、source_updated_at、deleted_at |
-| Docker 部署文件 | 未提供 | 增加 Dockerfile、compose、健康检查 |
-| Langfuse / OpenTelemetry | 待接入 | 当前只有本地 trace，可外接观测平台 |
-
-## Dify 接入规划
-
-当前还没有实现 Dify External Knowledge API。建议后续新增：
+如果需要接入 Dify 或兼容 Agent 平台，可以扩展一个外部知识库检索接口：
 
 ```http
 POST /retrieval
@@ -515,7 +496,6 @@ node --check src/enterprise_rag_mvp/web/docs.js
 
 ## 当前边界
 
-- 当前没有完整 K12 资料上传、文档状态流转和知识库管理 API。
 - 当前没有 Dify External Knowledge API，需要单独实现 `/retrieval`。
 - 当前没有 Dockerfile 和 docker-compose。
 - 当前文件解析只完成 P0 骨架，PDF / DOCX / 图片生产解析器还未接入。
