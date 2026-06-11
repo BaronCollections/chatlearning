@@ -311,8 +311,9 @@ def test_evolution_documentation_is_a_standalone_developer_docs_page():
     assert "外部知识 API 与工具检索" in docs_js
     assert "什么时候必须做" in docs_js
     assert "验证方式" in docs_js
-    assert "标题��中文编号" not in docs_js
-    assert "端口都��能随意占用" not in docs_js
+    replacement_char = "\ufffd"
+    assert f"标题{replacement_char}{replacement_char}中文编号" not in docs_js
+    assert f"端口都{replacement_char}{replacement_char}能随意占用" not in docs_js
 
     assert ".docs-page-shell" in docs_css
     assert ".docs-sidebar" in docs_css
