@@ -274,6 +274,20 @@ def _document_chunks_to_policy_chunks(
     return chunks
 
 
+def _with_parent_metadata(chunks: list[PolicyChunk], base_metadata: dict[str, Any]) -> list[PolicyChunk]:
+    return [
+        PolicyChunk(
+            chunk_id=chunk.chunk_id,
+            doc_id=chunk.doc_id,
+            block_id=chunk.block_id,
+            text=chunk.text,
+            heading_path=chunk.heading_path,
+            metadata={**base_metadata, **chunk.metadata},
+        )
+        for chunk in chunks
+    ]
+
+
 def detail_to_policy_chunks(
     detail: dict[str, Any],
     *,
@@ -307,8 +321,6 @@ def detail_to_policy_chunks(
         )
     )
     text = parsed_document_text(parsed_body)
-    if not text:
-        return []
 
     attachment_chunks, attachment_summary = _parse_attachment_chunks(
         file_list=file_list if parse_attachments and isinstance(file_list, list) else [],
@@ -351,26 +363,26 @@ def detail_to_policy_chunks(
         "parse_warnings": parse_warnings or None,
     }
     base_metadata = {key: value for key, value in base_metadata.items() if value is not None}
+    attachment_chunks = _with_parent_metadata(attachment_chunks, base_metadata)
 
-    chunked_body = chunk_parsed_document(parsed_body, max_chars=max_chars, overlap_chars=overlap_chars)
-    if not chunked_body.chunks:
-        return []
-
-    chunk_quality_metadata = {
-        "chunker_name": chunked_body.quality.chunker_name,
-        "chunker_version": chunked_body.quality.chunker_version,
-        "chunking_status": chunked_body.quality.status,
-        "chunking_strategy": chunked_body.quality.chunking_strategy,
-        "chunking_fallback_reason": chunked_body.quality.fallback_reason,
-        "chunking_boundary_confidence": chunked_body.quality.boundary_confidence,
-    }
-    body_chunks = _document_chunks_to_policy_chunks(
-        doc_id=doc_id,
-        title=title,
-        base_heading_path=heading_path or [title],
-        base_metadata={**base_metadata, **{key: value for key, value in chunk_quality_metadata.items() if value is not None}},
-        document_chunks=chunked_body.chunks,
-    )
+    body_chunks: list[PolicyChunk] = []
+    if text:
+        chunked_body = chunk_parsed_document(parsed_body, max_chars=max_chars, overlap_chars=overlap_chars)
+        chunk_quality_metadata = {
+            "chunker_name": chunked_body.quality.chunker_name,
+            "chunker_version": chunked_body.quality.chunker_version,
+            "chunking_status": chunked_body.quality.status,
+            "chunking_strategy": chunked_body.quality.chunking_strategy,
+            "chunking_fallback_reason": chunked_body.quality.fallback_reason,
+            "chunking_boundary_confidence": chunked_body.quality.boundary_confidence,
+        }
+        body_chunks = _document_chunks_to_policy_chunks(
+            doc_id=doc_id,
+            title=title,
+            base_heading_path=heading_path or [title],
+            base_metadata={**base_metadata, **{key: value for key, value in chunk_quality_metadata.items() if value is not None}},
+            document_chunks=chunked_body.chunks,
+        )
     return body_chunks + attachment_chunks
 
 

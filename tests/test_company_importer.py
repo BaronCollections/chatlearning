@@ -427,3 +427,33 @@ def test_detail_to_policy_chunks_can_parse_text_attachment_when_enabled():
     body_chunk = next(chunk for chunk in chunks if chunk.metadata.get("source") == "company_policy_system")
     assert body_chunk.metadata["attachment_parse_status"] == "success"
     assert body_chunk.metadata["attachment_parsed_count"] == 1
+
+
+def test_detail_to_policy_chunks_imports_attachment_when_body_is_empty():
+    detail = {
+        "importInformationId": 89,
+        "cnTitle": "附件-only 制度",
+        "policyCategoryTypeName": "HR",
+        "body": "<p> </p>",
+        "fileList": [
+            {"name": "正式制度.txt", "url": "https://files.example.test/policy-89.txt", "contentType": "text/plain"}
+        ],
+    }
+
+    chunks = detail_to_policy_chunks(
+        detail,
+        max_chars=80,
+        overlap_chars=5,
+        parse_attachments=True,
+        attachment_fetcher=lambda raw_attachment: "附件才是正式制度内容。".encode("utf-8"),
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["source"] == "company_policy_attachment"
+    assert chunks[0].metadata["parent_doc_id"] == "company-policy-89"
+    assert chunks[0].metadata["import_information_id"] == 89
+    assert chunks[0].metadata["file_count"] == 1
+    assert chunks[0].metadata["attachment_parse_status"] == "success"
+    assert chunks[0].metadata["attachment_parsed_count"] == 1
+    assert chunks[0].metadata["title"] == "附件-only 制度"
+    assert chunks[0].text == "附件才是正式制度内容。"

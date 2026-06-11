@@ -133,6 +133,43 @@ def _parsed_bilingual_policy():
     )
 
 
+ENGLISH_ONLY_POLICY_TEXT = """
+Example School Employee Disciplinary Rules
+
+IV. Violations
+(II) Category 2 Violation
+4. Conduct that disrupts the day-to-day operation of School
+4.2 Absent from work without appropriate approval for less than three days.
+"""
+
+
+def _parsed_english_only_policy():
+    return HtmlDocumentParser().parse(
+        DocumentSource(
+            source_id="policy-en",
+            source_name="Employee Disciplinary Rules",
+            file_name="policy.html",
+            content_type="text/html",
+            text=ENGLISH_ONLY_POLICY_TEXT,
+        )
+    )
+
+
+def test_policy_chunker_structures_english_only_policy_rules():
+    result = chunk_parsed_document(_parsed_english_only_policy(), max_chars=1200, overlap_chars=150)
+
+    english_group = next((chunk for chunk in result.chunks if chunk.metadata.get("chunk_type") == "english_clause_group"), None)
+
+    assert result.quality.chunking_strategy == "policy_clause_group"
+    assert result.quality.coverage_status == "complete"
+    assert result.quality.element_coverage_status == "complete"
+    assert result.quality.english_retrieval_chunk_count >= 1
+    assert english_group is not None
+    assert english_group.metadata["violation_level"] == "category_2"
+    assert english_group.metadata["clause_range"] == "4.2"
+    assert "4.2 Absent from work without appropriate approval" in english_group.text
+
+
 def test_policy_chunker_keeps_bilingual_front_matter_on_semantic_boundaries():
     result = chunk_parsed_document(_parsed_bilingual_policy(), max_chars=1200, overlap_chars=150)
     chunk_texts = [chunk.text for chunk in result.chunks]
@@ -305,3 +342,26 @@ def test_policy_chunker_falls_back_explicitly_for_unstructured_text():
     assert result.quality.provenance_missing_count == 0
     assert all(chunk.metadata.get("element_ids") for chunk in result.chunks)
     assert result.chunks[0].metadata["chunk_type"] == "fixed_window"
+
+
+def test_policy_chunker_reports_partial_coverage_when_fallback_chunk_loses_source_span(monkeypatch):
+    from enterprise_rag_mvp.document_chunking import policy_chunker
+
+    parsed = HtmlDocumentParser().parse(
+        DocumentSource(
+            source_id="memo-broken",
+            source_name="普通说明",
+            file_name="memo.html",
+            content_type="text/html",
+            text="真实原文内容。",
+        )
+    )
+    monkeypatch.setattr(policy_chunker, "fixed_window_chunks", lambda text, *, max_chars, overlap_chars: ["不存在的切块内容"])
+
+    result = policy_chunker.chunk_parsed_document(parsed, max_chars=30, overlap_chars=5)
+
+    assert result.quality.status == "success"
+    assert result.quality.coverage_status == "partial"
+    assert result.quality.covered_char_count == 0
+    assert result.quality.provenance_missing_count == 1
+    assert result.chunks[0].metadata.get("source_span") is None

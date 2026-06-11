@@ -288,6 +288,7 @@ def chunk_parsed_document(document: ParsedDocument, *, max_chars: int = 1200, ov
         overlap_chars=overlap_chars,
     )
     fallback_chunks = _attach_element_provenance(fallback_chunks, element_spans)
+    fallback_char_coverage = _coverage_report(text, fallback_chunks)
     fallback_coverage = _element_coverage_report(element_spans, fallback_chunks)
     fallback_structure = _chunk_structure_report(fallback_chunks)
     return ChunkedDocument(
@@ -305,11 +306,7 @@ def chunk_parsed_document(document: ParsedDocument, *, max_chars: int = 1200, ov
             fallback_chunk_count=len(fallback_chunks),
             boundary_confidence="low" if fallback_chunks else None,
             fallback_reason="no_policy_structure_detected",
-            coverage_status="complete" if fallback_chunks else "partial",
-            source_char_count=len("".join(char for char in text if not char.isspace())),
-            covered_char_count=len("".join(char for char in text if not char.isspace())) if fallback_chunks else 0,
-            uncovered_char_count=0 if fallback_chunks else len("".join(char for char in text if not char.isspace())),
-            coverage_ratio=1.0 if fallback_chunks else 0.0,
+            **fallback_char_coverage,
             **fallback_coverage,
             **fallback_structure,
             warnings=[] if fallback_chunks else ["No chunks produced by fixed-window fallback."],
@@ -324,20 +321,20 @@ def _fallback_document_chunks(*, document_name: str, text: str, max_chars: int, 
         start = text.find(chunk, cursor)
         if start < 0:
             start = text.find(chunk)
-        if start < 0:
-            start = cursor
-        end = start + len(chunk)
-        cursor = max(cursor, end - overlap_chars)
+        metadata = {
+            "chunk_type": "fixed_window",
+            "chunking_strategy": "fixed_window_fallback",
+        }
+        if start >= 0:
+            end = start + len(chunk)
+            cursor = max(cursor, end - overlap_chars)
+            metadata["source_span"] = {"start": start, "end": end}
         chunks.append(
             DocumentChunk(
                 chunk_id=f"chunk-{index:04d}",
                 text=chunk,
                 heading_path=[document_name],
-                metadata={
-                    "chunk_type": "fixed_window",
-                    "chunking_strategy": "fixed_window_fallback",
-                    "source_span": {"start": start, "end": end},
-                },
+                metadata=metadata,
             )
         )
     return chunks
@@ -435,13 +432,25 @@ def _find_chinese_body_start_index(spans: list[_ElementSpan]) -> int | None:
 
 
 def _find_english_tail_start(spans: list[_ElementSpan], body_start_index: int | None) -> tuple[int, int] | None:
-    if body_start_index is None:
-        return None
-    for index in range(body_start_index + 1, len(spans)):
-        match = _ENGLISH_START_RE.search(spans[index].text)
+    start_index = 0 if body_start_index is None else body_start_index + 1
+    for index in range(start_index, len(spans)):
+        match = _first_english_policy_marker(spans[index].text)
         if match:
             return index, match.start()
     return None
+
+
+def _first_english_policy_marker(text: str) -> re.Match[str] | None:
+    matches = [
+        match
+        for match in (
+            _ENGLISH_START_RE.search(text),
+            _ENGLISH_MAJOR_HEADING_RE.search(text),
+            _ENGLISH_CATEGORY_RE.search(text),
+        )
+        if match is not None
+    ]
+    return min(matches, key=lambda match: match.start()) if matches else None
 
 
 def _strip_with_source_offset(raw_text: str, source_start: int) -> tuple[str, int]:
