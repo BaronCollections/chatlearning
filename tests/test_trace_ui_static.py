@@ -412,3 +412,21 @@ def test_chat_ui_uses_backend_next_conversation_context_before_trace_fallback():
     assert "data.next_conversation_context" in app_js
     assert "conversationContext = { ...nextContext }" in app_js
     assert "traceStep(data, \"query_understanding\")" in app_js
+
+
+def test_chat_ui_initializes_conversation_context_before_first_request():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    declaration_index = app_js.find("let conversationContext = {};")
+    request_index = app_js.find("conversation_context: conversationContext")
+    assert declaration_index >= 0
+    assert request_index >= 0
+    assert declaration_index < request_index
+
+
+def test_chat_ui_reports_unexpected_request_errors_in_pending_bubble():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "catch (error)" in app_js
+    assert "console.error(\"Chat request failed\", error)" in app_js
+    assert "请求失败：" in app_js

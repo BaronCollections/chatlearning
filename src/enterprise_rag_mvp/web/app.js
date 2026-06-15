@@ -8,6 +8,7 @@ const langfuseTraceLink = document.querySelector("#langfuseTraceLink");
 const clearButton = document.querySelector("#clearButton");
 
 let latestTraceData = null;
+let conversationContext = {};
 let detailDrawer = null;
 let detailBackdrop = null;
 let selectedDetailTrigger = null;
@@ -2066,32 +2067,37 @@ async function ask(message) {
   appendMessage("assistant", "正在执行 RAG 流程...");
   const pending = messages.lastElementChild.querySelector(".bubble");
 
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, top_k: 3, conversation_context: conversationContext }),
-  });
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, top_k: 3, conversation_context: conversationContext }),
+    });
 
-  if (!response.ok) {
-    let errorText = await response.text();
-    try {
-      const errorBody = JSON.parse(errorText);
-      if (errorBody.detail?.message) {
-        errorText = `${errorBody.detail.message}: ${errorBody.detail.error || "unknown error"}`;
+    if (!response.ok) {
+      let errorText = await response.text();
+      try {
+        const errorBody = JSON.parse(errorText);
+        if (errorBody.detail?.message) {
+          errorText = `${errorBody.detail.message}: ${errorBody.detail.error || "unknown error"}`;
+        }
+      } catch (_) {
+        // Keep the plain response body when the server returns non-JSON errors.
       }
-    } catch (_) {
-      // Keep the plain response body when the server returns non-JSON errors.
+      pending.textContent = `请求失败：${errorText}`;
+      return;
     }
-    pending.textContent = `请求失败：${errorText}`;
-    return;
-  }
 
-  const data = await response.json();
-  latestTraceData = data;
-  updateConversationContext(data);
-  renderAssistantResponse(pending, data);
-  workflowSelect.value = "rag-core";
-  renderSelectedWorkflow();
+    const data = await response.json();
+    latestTraceData = data;
+    updateConversationContext(data);
+    renderAssistantResponse(pending, data);
+    workflowSelect.value = "rag-core";
+    renderSelectedWorkflow();
+  } catch (error) {
+    console.error("Chat request failed", error);
+    pending.textContent = `请求失败：${error?.message || "前端执行异常"}`;
+  }
 }
 
 form.addEventListener("submit", (event) => {
