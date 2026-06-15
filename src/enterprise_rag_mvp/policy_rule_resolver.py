@@ -4,6 +4,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from enterprise_rag_mvp.query_intent import understand_query
+
 DISCIPLINARY_ACTION_ASPECT = "disciplinary_action"
 DEFINITION_ASPECT = "definition"
 PROCESS_ASPECT = "process"
@@ -62,6 +64,8 @@ ABSENTEEISM_BEHAVIOR_TERMS = [
     "请假申请未经学校批准",
     "逾期不归",
     "逾期不出勤",
+    "缺勤",
+    "未出勤",
 ]
 
 ABSENTEEISM_UNDER_THREE_TERMS = [
@@ -171,6 +175,8 @@ class BehaviorPattern:
     preferred_policy_titles: list[str]
     exclude_sections: list[str] = field(default_factory=list)
     exclude_clauses: list[str] = field(default_factory=list)
+    required_conditions: list[str] = field(default_factory=list)
+    condition_term_groups: dict[str, list[str]] = field(default_factory=dict)
 
 
 ABSENTEEISM_RULES = [
@@ -227,6 +233,58 @@ ABSENTEEISM_RULES = [
 
 BEHAVIOR_PATTERNS = [
     BehaviorPattern(
+        behavior=ABSENTEEISM_BEHAVIOR,
+        behavior_label="旷工",
+        triggers=ABSENTEEISM_BEHAVIOR_TERMS,
+        target_section=None,
+        target_clause=None,
+        target_clause_no=None,
+        target_subclause=None,
+        classification_terms=["旷工", "旷工少于三天", "二类违规行为", "破坏学校管理秩序行为"],
+        search_terms=[
+            "旷工",
+            "连续旷工3个工作日以下",
+            "连续旷工3个工作日及以上",
+            "一年内累计两次及以上旷工",
+            "扣除旷工期间工资",
+            "记过处分",
+            "辞退处分",
+            "旷工少于三天",
+        ],
+        preferred_policy_titles=ABSENTEEISM_POLICY_TITLE_TERMS,
+    ),
+    BehaviorPattern(
+        behavior="abusive_language",
+        behavior_label="语言不得体",
+        triggers=["骂人", "说脏话", "脏话", "辱骂", "言语攻击", "语言不得体"],
+        target_section="三类违规行为",
+        target_clause="4. 侵犯学校权益行为",
+        target_clause_no="4",
+        target_subclause="4.2",
+        classification_terms=["三类违规行为", "侵犯学校权益行为", "4.2对客户、来访者怠慢或语言不得体"],
+        search_terms=["语言不得体", "怠慢", "投诉", "三类违规行为", "侵犯学校权益行为", "书面或口头警告"],
+        preferred_policy_titles=["员工纪律制度", "***公司人守则-员工纪律制度"],
+        exclude_sections=["一类违规行为", "二类违规行为"],
+        required_conditions=["对象为客户或来访者", "并引起投诉"],
+        condition_term_groups={
+            "对象为客户或来访者": ["客户", "来访者"],
+            "并引起投诉": ["投诉", "被投诉", "引起投诉"],
+        },
+    ),
+    BehaviorPattern(
+        behavior="teacher_ethics",
+        behavior_label="师德师风失范",
+        triggers=["没有师德", "师德", "师德师风", "违反师德", "教师职业行为准则"],
+        target_section="二类违规行为",
+        target_clause="1. 师德师风相关的违规行为",
+        target_clause_no="1",
+        target_subclause="1.1",
+        classification_terms=["二类违规行为", "师德师风相关的违规行为", "1.1违反教师职业行为准则"],
+        search_terms=["师德师风", "教师职业行为准则", "限制性规定", "二类违规行为", "记过处分"],
+        preferred_policy_titles=["员工纪律制度", "***公司人守则-员工纪律制度"],
+        exclude_sections=["一类违规行为", "三类违规行为"],
+    ),
+    BehaviorPattern(
         behavior="salary_inquiry",
         behavior_label="打听工资",
         triggers=["打听工资", "讨论工资", "工资", "奖金", "津贴补贴", "个人待遇"],
@@ -260,8 +318,8 @@ BEHAVIOR_PATTERNS = [
         target_section="三类违规行为",
         target_clause="5. 破坏学校管理秩序行为",
         target_clause_no="5",
-        target_subclause=None,
-        classification_terms=["三类违规行为", "破坏学校管理秩序行为", "一学年中出现两次及两次以上"],
+        target_subclause="5.1",
+        classification_terms=["三类违规行为", "破坏学校管理秩序行为", "5.1一学年中出现两次及两次以上", "一学年中出现两次及两次以上"],
         search_terms=["迟到", "早退", "一学年中出现两次及两次以上", "三类违规行为", "破坏学校管理秩序行为"],
         preferred_policy_titles=["员工纪律制度", "***公司人守则-员工纪律制度"],
         exclude_sections=["一类违规行为", "二类违规行为"],
@@ -462,6 +520,13 @@ def find_behavior_pattern(query: str) -> BehaviorPattern | None:
     return None
 
 
+def matched_behavior_label(query: str, pattern: BehaviorPattern) -> str:
+    matched = [trigger for trigger in pattern.triggers if trigger in query]
+    if pattern.behavior == "lateness" and matched:
+        return max(matched, key=len)
+    return pattern.behavior_label
+
+
 def aspect_terms(aspect: str | None) -> list[str]:
     if aspect == DISCIPLINARY_ACTION_ASPECT:
         return DISCIPLINARY_ACTION_RETRIEVAL_TERMS
@@ -499,8 +564,11 @@ def _base_spec() -> dict[str, Any]:
         "rule_search_terms": [],
         "expected_evidence": [],
         "query_schema": default_query_schema(),
+        "intent_schema": None,
         "exclude_sections": [],
         "exclude_clauses": [],
+        "required_conditions": [],
+        "missing_conditions": [],
     }
 
 
@@ -579,9 +647,19 @@ def _apply_rule_resolution(spec: dict[str, Any], resolution: RuleResolution) -> 
     }
 
 
-def _apply_behavior_pattern(spec: dict[str, Any], pattern: BehaviorPattern, answer_aspect: str | None) -> None:
+def _missing_required_conditions(query: str, pattern: BehaviorPattern) -> list[str]:
+    missing: list[str] = []
+    for condition in pattern.required_conditions:
+        terms = pattern.condition_term_groups.get(condition) or [condition]
+        if not any(term in query for term in terms):
+            missing.append(condition)
+    return missing
+
+
+def _apply_behavior_pattern(spec: dict[str, Any], pattern: BehaviorPattern, answer_aspect: str | None, query: str) -> None:
+    behavior_label = matched_behavior_label(query, pattern)
     spec["target_behavior"] = pattern.behavior
-    spec["target_behavior_label"] = pattern.behavior_label
+    spec["target_behavior_label"] = behavior_label
     spec["target_section"] = pattern.target_section
     spec["target_clause"] = pattern.target_clause
     spec["target_clause_no"] = pattern.target_clause_no
@@ -591,21 +669,34 @@ def _apply_behavior_pattern(spec: dict[str, Any], pattern: BehaviorPattern, answ
     spec["asked_aspect"] = retrieval_aspect
     spec["answer_aspect"] = answer_aspect
     spec["rule_search_terms"] = pattern.search_terms
+    missing_conditions = _missing_required_conditions(query, pattern)
+    spec["required_conditions"] = list(pattern.required_conditions)
+    spec["missing_conditions"] = missing_conditions
     _merge_unique(spec, "exclude_sections", pattern.exclude_sections)
     _merge_unique(spec, "exclude_clauses", pattern.exclude_clauses)
     _add_terms(spec, *pattern.triggers, *pattern.search_terms, *pattern.classification_terms, *pattern.preferred_policy_titles)
+    condition_parameters = {
+        "required_conditions": list(pattern.required_conditions),
+        "missing_conditions": missing_conditions,
+    } if pattern.required_conditions else {}
+    notes = ["命中行为型制度查询，但当前没有数值阈值规则；使用目标条款和分类作为检索约束。"]
+    if missing_conditions:
+        notes.append("用户问题缺少条款成立条件，回答必须按条件性结论处理，不能直接判定最终处罚。")
+    spec["condition_parameters"] = condition_parameters
     spec["query_schema"] = {
-        "target_object": {"type": "behavior", "value": pattern.behavior_label, "key": pattern.behavior},
+        "target_object": {"type": "behavior", "value": behavior_label, "key": pattern.behavior},
         "answer_aspect": answer_aspect,
-        "condition_parameters": {},
+        "condition_parameters": condition_parameters,
         "audience": "employee",
         "rule_match": None,
-        "notes": ["命中行为型制度查询，但当前没有数值阈值规则；使用目标条款和分类作为检索约束。"],
+        "notes": notes,
     }
 
 
 def build_policy_lookup_spec(query: str) -> dict[str, Any]:
     spec = _base_spec()
+    intent_schema = understand_query(query)
+    spec["intent_schema"] = intent_schema.to_dict()
     answer_aspect = infer_answer_aspect(query)
     retrieval_aspect = answer_aspect if answer_aspect == DISCIPLINARY_ACTION_ASPECT else None
     spec["asked_aspect"] = retrieval_aspect
@@ -614,19 +705,23 @@ def build_policy_lookup_spec(query: str) -> dict[str, Any]:
 
     _apply_section_lookup(query, spec)
 
-    false_reimbursement_pattern = next(item for item in BEHAVIOR_PATTERNS if item.behavior == "false_reimbursement")
-    if any(trigger in query for trigger in false_reimbursement_pattern.triggers):
-        _apply_behavior_pattern(spec, false_reimbursement_pattern, answer_aspect)
+    audience = intent_schema.audience
+    allow_employee_policy_patterns = audience in {"employee", "unknown"}
 
-    rule_resolution = resolve_rule_query(query)
-    if rule_resolution:
-        _apply_rule_resolution(spec, rule_resolution)
-    else:
-        pattern = find_behavior_pattern(query)
-        if pattern:
-            _apply_behavior_pattern(spec, pattern, answer_aspect)
+    if allow_employee_policy_patterns:
+        false_reimbursement_pattern = next(item for item in BEHAVIOR_PATTERNS if item.behavior == "false_reimbursement")
+        if any(trigger in query for trigger in false_reimbursement_pattern.triggers):
+            _apply_behavior_pattern(spec, false_reimbursement_pattern, answer_aspect, query)
 
-    if answer_aspect == DISCIPLINARY_ACTION_ASPECT:
+        rule_resolution = resolve_rule_query(query)
+        if rule_resolution:
+            _apply_rule_resolution(spec, rule_resolution)
+        else:
+            pattern = find_behavior_pattern(query)
+            if pattern:
+                _apply_behavior_pattern(spec, pattern, answer_aspect, query)
+
+    if answer_aspect == DISCIPLINARY_ACTION_ASPECT and allow_employee_policy_patterns:
         _add_terms(spec, *DISCIPLINARY_ACTION_RETRIEVAL_TERMS)
 
     subclause_match = re.search(r"(?<!\d)(\d{1,2}\.\d+)(?!\d)", query)

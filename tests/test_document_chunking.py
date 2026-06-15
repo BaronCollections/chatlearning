@@ -155,6 +155,60 @@ def _parsed_english_only_policy():
     )
 
 
+LEAVE_POLICY_TEXT = """
+工作时间及假期管理制度
+
+一、目的
+为保障学校的正常运转和员工的合法假期权益，制定本假期政策。
+
+五、假期标准
+（一）假期申请及审批
+1. 员工请假原则上须提前3个工作日在请假系统中提交申请。
+（二）假期类型
+1. 寒暑假
+教学教师：暑假5周；寒假不少于20个日历天。
+2. 带薪年假（适用于全体非教学老师）
+2.1 按照员工的本单位连续工龄，年休假天数如下：
+第一年 第二年 第三年 第四年 第五年 第六年及以后
+10天 12天 14天 16天 18天 20天
+2.1年休假不包括法定节假日及周末公休日；
+2.2非教学老师使用年休假规则：非寒暑假时间（学期内）单次请假原则上不能连续超过5天;
+3. 婚假
+3.1 申请婚假须提供结婚证明。
+4. 病假
+4.1 一次申请病假1天以上，须提交医疗机构开具的有效病假单。
+"""
+
+
+def _parsed_leave_policy():
+    return HtmlDocumentParser().parse(
+        DocumentSource(
+            source_id="leave-policy",
+            source_name="工作时间及假期管理制度",
+            file_name="leave.html",
+            content_type="text/html",
+            text=LEAVE_POLICY_TEXT,
+        )
+    )
+
+
+def test_policy_chunker_structures_leave_policy_clause_groups():
+    result = chunk_parsed_document(_parsed_leave_policy(), max_chars=1200, overlap_chars=150)
+
+    annual_leave = next((chunk for chunk in result.chunks if chunk.metadata.get("chunk_type") == "policy_clause_group" and "带薪年假" in chunk.text), None)
+
+    assert result.quality.chunking_strategy == "policy_clause_group"
+    assert result.quality.coverage_status == "complete"
+    assert result.quality.element_coverage_status == "complete"
+    assert annual_leave is not None
+    assert annual_leave.metadata["chunk_role"] == "retrieval"
+    assert annual_leave.metadata["section_title"] == "五、假期标准"
+    assert annual_leave.metadata["clause_title"].startswith("2. 带薪年假")
+    assert "第五年" in annual_leave.text
+    assert "18天" in annual_leave.text
+    assert "4. 病假" not in annual_leave.text
+
+
 def test_policy_chunker_structures_english_only_policy_rules():
     result = chunk_parsed_document(_parsed_english_only_policy(), max_chars=1200, overlap_chars=150)
 

@@ -7,6 +7,8 @@ import time
 from typing import Any
 from urllib.parse import quote
 
+from enterprise_rag_mvp.answer_planner import plan_answer
+from enterprise_rag_mvp.evidence_validator import assess_evidence
 from enterprise_rag_mvp.models import PolicyChunk, SearchResult
 from enterprise_rag_mvp.policy_rule_resolver import (
     ABSENTEEISM_BEHAVIOR,
@@ -252,10 +254,10 @@ def _policy_lookup_spec(query: str) -> dict[str, Any]:
 
 def _detect_query_understanding(query: str) -> dict[str, Any]:
     policy_category_hint = "general"
-    if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗"]):
+    if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗", "骂人", "说脏话", "脏话", "辱骂", "语言不得体", "师德", "师德师风"]):
         if any(term in query for term in ["年假", "年休假"]):
             policy_category_hint = "leave"
-        elif any(term in query for term in ["违规", "弄虚作假", "旷工"]):
+        elif any(term in query for term in ["违规", "弄虚作假", "旷工", "骂人", "说脏话", "脏话", "辱骂", "语言不得体", "师德", "师德师风"]):
             policy_category_hint = "conduct"
         elif any(term in query for term in ["考勤", "迟到", "早退", "离岗"]):
             policy_category_hint = "attendance"
@@ -266,7 +268,7 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
     elif any(term in query for term in ["安全", "账号", "数据", "外传"]):
         policy_category_hint = "security"
 
-    audience_hint = "employee" if any(term in query for term in ["员工", "老师", "教师", "HR", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗"]) else "unknown"
+    audience_hint = "employee" if any(term in query for term in ["员工", "老师", "教师", "HR", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗", "骂人", "说脏话", "脏话", "辱骂", "语言不得体", "师德", "师德师风"]) else "unknown"
     if any(term in query for term in ["学生", "幼儿园", "小学", "初中", "高中"]):
         audience_hint = "student_or_stage_specific"
 
@@ -530,6 +532,27 @@ def _semantic_topic_terms(understanding: dict[str, Any]) -> list[str]:
 
 
 def _filter_semantic_topic_evidence(results: list[SearchResult], understanding: dict[str, Any]) -> tuple[list[SearchResult], dict[str, Any]]:
+    audience = understanding.get("audience_hint") or (understanding.get("intent_schema") or {}).get("audience")
+    if audience in {"student", "student_or_stage_specific"}:
+        student_terms = ["学生", "幼儿园", "小学", "初中", "高中", "学段", "家长"]
+        retained = []
+        for result in results:
+            metadata = result.chunk.metadata or {}
+            declared_audience = str(metadata.get("audience") or metadata.get("target_audience") or "")
+            scope_text = " ".join([" ".join(result.chunk.heading_path), str(metadata.get("source", "")), str(metadata.get("title", "")), str(metadata.get("policy_type", "")), declared_audience])
+            if declared_audience in {"student", "student_or_stage_specific"} or (any(term in scope_text for term in student_terms) and "员工" not in scope_text):
+                retained.append(result)
+        if not retained:
+            return [], {
+                "applied": True,
+                "audience": audience,
+                "input_count": len(results),
+                "output_count": 0,
+                "dropped_chunk_ids": [result.chunk.chunk_id for result in results],
+                "reason": "用户问题指向学生或学段，但当前候选没有学生/学段适用范围；为避免套用员工制度，拒绝作为最终证据。",
+            }
+        results = retained
+
     topic_terms = _semantic_topic_terms(understanding)
     if not topic_terms:
         return results, {"applied": False, "reason": "普通语义查询没有明确主题词，不做最终证据过滤。"}
@@ -556,6 +579,7 @@ def _filter_semantic_topic_evidence(results: list[SearchResult], understanding: 
 
 def _classify_evidence(result: SearchResult, understanding: dict[str, Any]) -> dict[str, Any]:
     text = result.chunk.text
+    general_assessment = assess_evidence(result.chunk, understanding.get("intent_schema") or {})
     evidence_type = "semantic_candidate"
     usable_as_final = True
     reason = "普通语义候选，非精确制度查询不做强过滤。"
@@ -581,6 +605,7 @@ def _classify_evidence(result: SearchResult, understanding: dict[str, Any]) -> d
         "title": " > ".join(result.chunk.heading_path) if result.chunk.heading_path else result.chunk.doc_id,
         "evidence_type": evidence_type,
         "usable_as_final": usable_as_final,
+        "general_evidence_assessment": general_assessment.to_dict(),
         "reason": reason,
     }
 
@@ -1032,13 +1057,20 @@ def _find_behavior_classification_result(results: list[SearchResult], understand
     target_clause = understanding.get("target_clause")
     target_subclause = understanding.get("target_subclause")
     target_label = understanding.get("target_behavior_label")
+    target_section = understanding.get("target_section")
     for result in results:
         text = result.chunk.text
-        if target_subclause and str(target_subclause) in text:
+        metadata_without_scope = {key: value for key, value in (result.chunk.metadata or {}).items() if key not in {"scope", "scoped_text_applied"}}
+        metadata_text = " ".join(str(value) for value in metadata_without_scope.values())
+        haystack = " ".join([text, " ".join(result.chunk.heading_path), metadata_text])
+        has_violation_scope = _has_violation_classification_signal(haystack)
+        if target_section and str(target_section) not in haystack:
+            continue
+        if target_subclause and str(target_subclause) in text and has_violation_scope:
             return result
-        if target_label and str(target_label) in text:
+        if target_label and str(target_label) in text and has_violation_scope:
             return result
-        if target_clause and str(target_clause) in text and not _has_aspect_signal(text, understanding):
+        if target_clause and str(target_clause) in text and has_violation_scope and not _has_aspect_signal(text, understanding):
             return result
     return None
 
@@ -1236,13 +1268,29 @@ def _find_absenteeism_penalty_result(results: list[SearchResult]) -> SearchResul
 
 def _find_absenteeism_classification_result(results: list[SearchResult], understanding: dict[str, Any] | None = None) -> SearchResult | None:
     understanding = understanding or {}
-    classification_terms = list((understanding.get("rule_resolution") or {}).get("classification_terms") or [])
-    if "4.2旷工少于三天" not in classification_terms:
+    rule_resolution = understanding.get("rule_resolution") or {}
+    classification_terms = [str(term) for term in rule_resolution.get("classification_terms") or []]
+    target_category = next((term for term in ["一类违规行为", "二类违规行为", "三类违规行为"] if term in classification_terms), None)
+
+    if target_category:
+        specific_terms = [
+            term
+            for term in classification_terms
+            if term != target_category and term not in {"破坏学校管理秩序行为"}
+        ]
+        for result in results:
+            text = result.chunk.text
+            if target_category not in text or not _has_violation_classification_signal(text):
+                continue
+            if any(term in text for term in specific_terms) or "旷工" in text:
+                return result
         return None
-    for result in results:
-        text = result.chunk.text
-        if "旷工少于三天" in text and _has_violation_classification_signal(text):
-            return result
+
+    if understanding.get("target_behavior") == ABSENTEEISM_BEHAVIOR and not rule_resolution:
+        for result in results:
+            text = result.chunk.text
+            if "旷工少于三天" in text and _has_violation_classification_signal(text):
+                return result
     return None
 
 
@@ -1278,6 +1326,8 @@ def _absenteeism_classification_label(result: SearchResult | None, understanding
     has_management_scope = "破坏学校管理秩序行为" in text or "破坏学校管理秩序行为" in rule_terms
     if has_management_scope and clause:
         return f"属于{category}中的破坏学校管理秩序行为（{clause}）"
+    if has_management_scope:
+        return f"属于{category}中的破坏学校管理秩序行为"
     if clause:
         return f"属于{category}（{clause}）"
     return f"属于{category}"
@@ -1309,6 +1359,32 @@ def _compose_absenteeism_answer(results: list[SearchResult], retrieval_mode: str
 
     penalty_index = results.index(penalty_result) + 1
     penalty_citation = _citation_for_result(penalty_result, penalty_index)
+    if not rule_resolution:
+        lines = [
+            f"我在制度库中返回了 {len(results)} 条候选片段。",
+            "事实：旷工。",
+            "规则匹配：当前问题没有给出连续旷工天数或一年内累计次数，不能直接落到单一处罚档，需要按制度条件分流。",
+        ]
+        if classification_result is not None and classification_label:
+            classification_index = results.index(classification_result) + 1
+            classification_citation = _citation_for_result(classification_result, classification_index)
+            lines.append(
+                f"违规类型：如果能确认连续旷工少于三天，根据 {classification_citation['citation_id']}《{classification_citation['title']}》，旷工{classification_label}。"
+            )
+        lines.extend(
+            [
+                "处理结果：\n1. 连续旷工3个工作日以下：扣除旷工期间工资；给予记过处分\n2. 连续旷工3个工作日及以上，或一年内累计两次及以上旷工：扣除旷工期间工资；给予辞退处分",
+                f"处罚依据：根据 {penalty_citation['citation_id']}《{penalty_citation['title']}》中的旷工处理规则。",
+                "不确定性提醒：如果能确认连续旷工天数、是否为工作日、是否一年内累计两次及以上，系统才能进一步匹配到唯一处罚档；存在请假审批或特殊审批时需要按实际考勤和 HR 确认。",
+            ]
+        )
+        return (
+            "\n".join(lines)
+            + "\n\n相关来源：\n"
+            + "\n".join(_source_lines(results))
+            + f"\n检索方式：{_mode_label(retrieval_mode)}。"
+        )
+
     user_fact = rule_resolution.get("user_fact") or "旷工事实"
     matched_rule = rule_resolution.get("matched_rule") or understanding.get("behavior_threshold") or "旷工规则"
     comparison = rule_resolution.get("comparison")
@@ -1375,6 +1451,17 @@ def _format_violation_action_items(text: str) -> list[str]:
     return parts or ([cleaned] if cleaned else [])
 
 
+def _extract_behavior_condition_text(text: str, behavior_label: str) -> str | None:
+    normalized = re.sub(r"\s+", "", text.strip())
+    for segment in re.split(r"[。；;]", normalized):
+        if behavior_label not in segment:
+            continue
+        if any(signal in segment for signal in ["一学年", "两次", "少于", "及以上", "并引起", "投诉", "造成"]):
+            subclause_match = re.search(r"(\d+\.\d+.*)", segment)
+            return (subclause_match.group(1) if subclause_match else segment).strip("，。；; ")
+    return None
+
+
 def _compose_behavior_policy_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any]) -> str | None:
     target_behavior = understanding.get("target_behavior")
     if not target_behavior or target_behavior == ABSENTEEISM_BEHAVIOR:
@@ -1390,10 +1477,19 @@ def _compose_behavior_policy_answer(results: list[SearchResult], retrieval_mode:
         f"我在制度库中返回了 {len(results)} 条候选片段。",
         f"事实：{behavior_label}。",
     ]
+    missing_conditions = [str(item) for item in understanding.get("missing_conditions") or [] if item]
+    required_conditions = [str(item) for item in understanding.get("required_conditions") or [] if item]
+    conditional_prefix = "如果满足条款条件，" if missing_conditions else ""
     if classification_label:
-        lines.append(f"规则匹配：根据 {classification_citation['citation_id']}《{classification_citation['title']}》，{behavior_label}{classification_label}。")
+        lines.append(f"规则匹配：根据 {classification_citation['citation_id']}《{classification_citation['title']}》，{conditional_prefix}{behavior_label}{classification_label}。")
     else:
-        lines.append(f"规则匹配：根据 {classification_citation['citation_id']}《{classification_citation['title']}》，命中与{behavior_label}相关的制度条款。")
+        lines.append(f"规则匹配：根据 {classification_citation['citation_id']}《{classification_citation['title']}》，{conditional_prefix}命中与{behavior_label}相关的制度条款。")
+    if missing_conditions:
+        lines.append(f"条件说明：当前问题还需要确认：{'、'.join(missing_conditions)}；制度条款要求：{'、'.join(required_conditions)}。")
+    else:
+        condition_text = _extract_behavior_condition_text(classification_result.chunk.text, behavior_label)
+        if condition_text:
+            lines.append(f"条款条件：{condition_text}。")
 
     if understanding.get("asked_aspect") == DISCIPLINARY_ACTION_ASPECT:
         penalty_result = _find_behavior_penalty_result(results, understanding)
@@ -1402,10 +1498,16 @@ def _compose_behavior_policy_answer(results: list[SearchResult], retrieval_mode:
             penalty_citation = _citation_for_result(penalty_result, penalty_index)
             action_items = _format_violation_action_items(penalty_result.chunk.text)
             action_lines = "\n".join(f"{index}. {item}" for index, item in enumerate(action_items, start=1))
+            result_heading = "处理结果（满足上述条件时）：" if missing_conditions else "处理结果："
+            uncertainty = (
+                f"不确定性提醒：需要确认{'、'.join(missing_conditions)}；如果对象、场景、投诉、影响程度或调查结论不同，最终处理需要以制度原文和正式处理决定为准。"
+                if missing_conditions
+                else "不确定性提醒：如果事实情节、损失程度、调查结论或制度委员会认定不同，最终处理需要以制度原文和正式处理决定为准。"
+            )
             lines.extend([
-                f"处理结果：\n{action_lines}",
+                f"{result_heading}\n{action_lines}",
                 f"处罚依据：根据 {penalty_citation['citation_id']}《{penalty_citation['title']}》中的“{understanding.get('target_section') or '对应违规等级'}”处理条款。",
-                "不确定性提醒：如果事实情节、损失程度、调查结论或制度委员会认定不同，最终处理需要以制度原文和正式处理决定为准。",
+                uncertainty,
             ])
         else:
             lines.append("处理结果：当前召回证据只覆盖行为分类，未召回到对应违规等级的处理条款，不能凭空给出处罚结论。")
@@ -1420,7 +1522,153 @@ def _compose_behavior_policy_answer(results: list[SearchResult], retrieval_mode:
     )
 
 
-def _compose_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any] | None = None) -> str:
+_CHINESE_DIGIT_VALUES = {
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+_ANNUAL_LEAVE_YEAR_LABELS = {
+    1: "第一年",
+    2: "第二年",
+    3: "第三年",
+    4: "第四年",
+    5: "第五年",
+    6: "第六年及以后",
+}
+
+
+def _chinese_number_to_int(value: str) -> int | None:
+    value = value.strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    if value == "十":
+        return 10
+    if "十" in value:
+        left, _, right = value.partition("十")
+        tens = _CHINESE_DIGIT_VALUES.get(left, 1 if left == "" else None)
+        ones = _CHINESE_DIGIT_VALUES.get(right, 0 if right == "" else None)
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    if len(value) == 1:
+        return _CHINESE_DIGIT_VALUES.get(value)
+    return None
+
+
+def _extract_requested_work_year(query: str) -> int | None:
+    if "第六年及以后" in query or "六年及以后" in query or "6年及以后" in query:
+        return 6
+    for match in re.finditer(r"(?:第|工作|工龄|司龄|连续工龄|本单位连续工龄|满)?\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*年", query):
+        value = _chinese_number_to_int(match.group(1))
+        if value is not None and 1 <= value <= 20:
+            return value
+    return None
+
+
+def _annual_leave_entitlements(text: str) -> dict[int, int]:
+    normalized = re.sub(r"\s+", " ", text)
+    table_match = re.search(
+        r"第一年\s*第二年\s*第三年\s*第四年\s*第五年\s*第六年及以后\s*"
+        r"(\d+)天\s*(\d+)天\s*(\d+)天\s*(\d+)天\s*(\d+)天\s*(\d+)天",
+        normalized,
+    )
+    if table_match:
+        values = [int(value) for value in table_match.groups()]
+        return {year: values[year - 1] for year in range(1, 7)}
+
+    entitlements: dict[int, int] = {}
+    for year, label in _ANNUAL_LEAVE_YEAR_LABELS.items():
+        match = re.search(rf"{re.escape(label)}\s*(\d+)天", normalized)
+        if match:
+            entitlements[year] = int(match.group(1))
+    return entitlements
+
+
+def _find_annual_leave_result(results: list[SearchResult]) -> SearchResult | None:
+    for result in results:
+        text = result.chunk.text
+        if any(term in text for term in ["带薪年假", "带薪年休假", "年休假天数"]):
+            entitlements = _annual_leave_entitlements(text)
+            if entitlements:
+                return result
+    return None
+
+
+def _format_annual_leave_table(entitlements: dict[int, int]) -> str:
+    parts = []
+    for year in range(1, 7):
+        if year in entitlements:
+            parts.append(f"{_ANNUAL_LEAVE_YEAR_LABELS[year]} {entitlements[year]}天")
+    return "、".join(parts)
+
+
+def _compose_annual_leave_answer(
+    results: list[SearchResult],
+    retrieval_mode: str,
+    understanding: dict[str, Any],
+    query: str,
+) -> str | None:
+    if understanding.get("policy_category_hint") != "leave" and not any(term in query for term in ["年假", "年休假"]):
+        return None
+    annual_result = _find_annual_leave_result(results)
+    if annual_result is None:
+        return None
+
+    entitlements = _annual_leave_entitlements(annual_result.chunk.text)
+    if not entitlements:
+        return None
+    requested_year = _extract_requested_work_year(query)
+    citation = _citation_for_result(annual_result, results.index(annual_result) + 1)
+    lines = [f"我在制度库中返回了 {len(results)} 条候选片段。"]
+
+    if requested_year is not None:
+        entitlement_key = 6 if requested_year >= 6 else requested_year
+        days = entitlements.get(entitlement_key)
+        if days is None:
+            return None
+        year_label = _ANNUAL_LEAVE_YEAR_LABELS[entitlement_key]
+        lines.extend(
+            [
+                f"结论：本单位连续工龄{year_label}，带薪年假为 {days}天。",
+                f"规则匹配：用户问的是工作{requested_year}年，对应制度表中的“{year_label}”。",
+            ]
+        )
+    else:
+        lines.append(f"结论：带薪年假按本单位连续工龄分档，{_format_annual_leave_table(entitlements)}。")
+
+    if "适用于全体非教学老师" in annual_result.chunk.text:
+        lines.append("适用范围：该条款写明“带薪年假（适用于全体非教学老师）”。")
+    lines.append(f"年假表：{_format_annual_leave_table(entitlements)}。")
+
+    note_parts = []
+    if "不包括法定节假日及周末公休日" in annual_result.chunk.text:
+        note_parts.append("年休假不包括法定节假日及周末公休日")
+    if "单次请假原则上不能连续超过5天" in annual_result.chunk.text:
+        note_parts.append("非寒暑假时间（学期内）单次请假原则上不能连续超过5天")
+    if "3个月内休完" in annual_result.chunk.text:
+        note_parts.append("未休完的年休假可在该入职年度结束后的3个月内休完，逾期规则以制度原文为准")
+    if note_parts:
+        lines.append("注意事项：" + "；".join(note_parts) + "。")
+    lines.append(f"依据：根据 {citation['citation_id']}《{citation['title']}》中的带薪年假条款。")
+    return (
+        "\n".join(lines)
+        + "\n\n相关来源：\n"
+        + "\n".join(_source_lines([annual_result]))
+        + f"\n检索方式：{_mode_label(retrieval_mode)}。"
+    )
+
+
+def _compose_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any] | None = None, query: str = "") -> str:
     if not results:
         return "没有在当前制度样本中检索到足够相关的内容。"
 
@@ -1432,6 +1680,10 @@ def _compose_answer(results: list[SearchResult], retrieval_mode: str, understand
     behavior_answer = _compose_behavior_policy_answer(results, retrieval_mode, understanding or {})
     if behavior_answer:
         return behavior_answer
+
+    annual_leave_answer = _compose_annual_leave_answer(results, retrieval_mode, understanding or {}, query)
+    if annual_leave_answer:
+        return annual_leave_answer
 
     best = results[0].chunk
     best_citation = _citation_for_result(results[0], 1)
@@ -1639,7 +1891,7 @@ def run_chat_trace(
 
     start = time.perf_counter()
     sensitive_flags = [term for term in ["工资", "身份证", "手机号", "账号", "密码"] if term in query]
-    domain_terms = [term for term in ["制度", "规则", "年假", "年休假", "报销", "考勤", "安全", "政策"] if term in query]
+    domain_terms = [term for term in ["制度", "规则", "年假", "年休假", "报销", "考勤", "安全", "政策", "处罚", "处分", "旷工", "骂人", "说脏话", "师德"] if term in query]
     steps.append(
         _step(
             key="input_guardrails",
@@ -1774,7 +2026,7 @@ def run_chat_trace(
 
     start = time.perf_counter()
     rewrite = _rewrite_query(normalized_query, understanding)
-    retrieval_query = rewrite["standalone_query"]
+    retrieval_query = rewrite["expanded_query"] if understanding.get("retrieval_intent") == "exact_policy_lookup" else rewrite["standalone_query"]
     steps.append(
         _step(
             key="query_rewrite",
@@ -1783,7 +2035,7 @@ def run_chat_trace(
             details={
                 "tool": "deterministic query rewrite rules",
                 "why": "改写能让‘年假’匹配到制度正文里的‘年休假’，但必须展示改写前后，防止语义漂移。",
-                "tradeoff": "当前 embedding 仍使用 standalone_query；expanded_query 先作为检索计划和后续 hybrid search 的输入说明。",
+                "tradeoff": "普通语义问题使用 standalone_query 控制语义漂移；精确制度查询使用 expanded_query，让同义词、条款号和处理词进入召回。",
                 "term_definitions": _rewrite_terms(),
                 "pitfalls": ["改写不能替用户回答问题，也不能扩大到用户没问的对象或时间范围。"],
                 **rewrite,
@@ -1944,7 +2196,7 @@ def run_chat_trace(
     )
 
     start = time.perf_counter()
-    candidate_limit = max(top_k, min(10, top_k * 4))
+    candidate_limit = max(top_k, min(24, top_k * 4))
     enabled_channels = ["dense_vector"]
     if understanding.get("retrieval_intent") == "exact_policy_lookup":
         enabled_channels = ["exact_match", "sparse_keyword", "dense_vector"]
@@ -2292,7 +2544,13 @@ def run_chat_trace(
     )
 
     start = time.perf_counter()
-    answer = _compose_answer(final_results, retrieval_mode, understanding)
+    answer_assessments = [assess_evidence(result.chunk, understanding.get("intent_schema") or {}) for result in final_results]
+    answer_plan = plan_answer(
+        understanding.get("intent_schema") or {},
+        answer_assessments,
+        rule_resolution=understanding.get("rule_resolution"),
+    )
+    answer = _compose_answer(final_results, retrieval_mode, understanding, normalized_query)
     observations = _langfuse_observations(trace_id, retrieval_mode, len(final_results))
     steps.append(
         _step(
@@ -2303,6 +2561,8 @@ def run_chat_trace(
                 "tool": "grounded answer template + Langfuse-ready observation metadata",
                 "template": "structured grounded answer + source + retrieval mode",
                 "answer": answer,
+                "answer_plan": answer_plan.to_dict(),
+                "answer_evidence_assessments": [assessment.to_dict() for assessment in answer_assessments],
                 "post_answer_faithfulness_check": {
                     "status": "ok" if final_results and scope_guard["status"] == "ok" else "warn",
                     "reason": "当前回答模板只引用最终证据；行为型问题会组合规则匹配、违规类型和处理结果。接入 LLM 后需要逐句检查引用覆盖和章节越界。",
@@ -2324,7 +2584,7 @@ def run_chat_trace(
                     key="compose_grounded_answer",
                     title="拼装有依据回答",
                     summary="按问题类型组织最终证据，行为型规则查询会拆成事实、规则匹配、结论和来源。",
-                    details={"answer": answer},
+                    details={"answer": answer, "answer_plan": answer_plan.to_dict()},
                     duration_ms=0,
                 ),
                 _step(

@@ -141,6 +141,8 @@ def test_run_chat_trace_explains_query_rewrite_rerank_quality_and_observability(
     assert understanding["details"]["intent"] == "rule_lookup"
     assert understanding["details"]["policy_category_hint"] == "leave"
     assert understanding["details"]["query_schema"]["answer_aspect"] == "definition"
+    assert understanding["details"]["intent_schema"]["target_object"] == "年休假"
+    assert "table_evidence" in understanding["details"]["intent_schema"]["required_evidence_types"]
     assert understanding["details"]["term_definitions"][0]["term"]
 
     rewrite = _step(response, "query_rewrite")
@@ -694,6 +696,14 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
     assert evidence["details"]["target_evidence_filter"]["output_count"] == 2
     evidence_types = {item["evidence_type"] for item in evidence["details"]["target_evidence_filter"]["evidence_classifications"]}
     assert "direct_behavior_evidence" in evidence_types
+    general_types = {
+        item["general_evidence_assessment"]["evidence_type"]
+        for item in evidence["details"]["target_evidence_filter"]["evidence_classifications"]
+    }
+    assert "action_evidence" in general_types
+    observe = _step(response, "answer_and_observe")
+    assert observe["details"]["answer_plan"]["answer_type"] == "disciplinary_action"
+    assert observe["details"]["answer_plan"]["sections"] == ["fact", "rule_match", "classification", "action", "citations", "uncertainty"]
     understanding = _step(response, "query_understanding")
     assert understanding["details"]["query_schema"]["target_object"]["key"] == "absenteeism"
     assert understanding["details"]["rule_resolution"]["matched_rule"] == "连续旷工3个工作日以下"
@@ -866,6 +876,96 @@ def test_in_memory_demo_handles_absenteeism_penalty_typo_query():
     assert "给予记过处分" in response["answer"]
 
 
+def test_in_memory_demo_answers_absenteeism_penalty_without_duration():
+    response = run_chat_trace(
+        "旷工会有什么处罚",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "没有在当前制度样本中检索到足够相关的内容" not in response["answer"]
+    assert "事实：旷工" in response["answer"]
+    assert "连续旷工3个工作日以下" in response["answer"]
+    assert "扣除旷工期间工资" in response["answer"]
+    assert "给予记过处分" in response["answer"]
+    assert "连续旷工3个工作日及以上" in response["answer"]
+    assert "给予辞退处分" in response["answer"]
+    assert "如果能确认连续旷工天数" in response["answer"]
+    assert "链接：https://example.com/policyDetail/11" in response["answer"]
+
+
+@pytest.mark.parametrize("query", ["说脏话有什么处罚", "骂人有什么处罚"])
+def test_in_memory_demo_maps_colloquial_abusive_language_to_policy_terms(query):
+    response = run_chat_trace(
+        query,
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "没有在当前制度样本中检索到足够相关的内容" not in response["answer"]
+    assert "语言不得体" in response["answer"]
+    assert "属于三类违规行为中的侵犯学校权益行为" in response["answer"]
+    assert "予以书面或口头警告" in response["answer"]
+    assert "如果满足条款条件" in response["answer"]
+    assert "引起投诉" in response["answer"]
+    assert "需要确认" in response["answer"]
+    assert "链接：https://example.com/policyDetail/16" in response["answer"]
+    understanding = _step(response, "query_understanding")
+    assert "并引起投诉" in understanding["details"]["missing_conditions"]
+
+
+def test_in_memory_demo_maps_teacher_ethics_query_to_policy_terms():
+    response = run_chat_trace(
+        "没有师德会有什么处罚",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "没有在当前制度样本中检索到足够相关的内容" not in response["answer"]
+    assert "师德师风" in response["answer"]
+    assert "属于二类违规行为中的师德师风相关的违规行为" in response["answer"]
+    assert "予以记过处分" in response["answer"]
+    assert "链接：https://example.com/policyDetail/16" in response["answer"]
+
+
+def test_in_memory_demo_answers_annual_leave_days_from_work_year():
+    response = run_chat_trace(
+        "工作五年有几天年假",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=3,
+    )
+
+    assert "结论" in response["answer"]
+    assert "第五年" in response["answer"]
+    assert "18天" in response["answer"]
+    assert "带薪年假" in response["answer"]
+    assert "适用于全体非教学老师" in response["answer"]
+    assert "4. 病假" not in response["answer"]
+    assert "链接：https://example.com/policyDetail/3" in response["answer"]
+    assert response["results"][0]["chunk_id"] == "leave-annual-001"
+    assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/3"
+
+
+def test_in_memory_demo_answers_three_day_absenteeism_with_violation_level():
+    response = run_chat_trace(
+        "旷工三天会怎样",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "事实：旷工 3 天" in response["answer"]
+    assert "连续旷工3个工作日及以上" in response["answer"]
+    assert "属于一类违规行为" in response["answer"]
+    assert "给予辞退处分" in response["answer"]
+    assert "链接：https://example.com/policyDetail/11" in response["answer"]
+    assert "链接：https://example.com/policyDetail/16" in response["answer"]
+
+
 def test_in_memory_demo_filters_unrelated_semantic_candidates_from_answer_sources():
     response = run_chat_trace(
         "员工年假规则是什么？",
@@ -879,3 +979,43 @@ def test_in_memory_demo_filters_unrelated_semantic_candidates_from_answer_source
     assert "员工休假管理办法" in response["answer"]
     assert "旷工处理" not in response["answer"]
     assert "员工纪律制度" not in response["answer"]
+
+def test_trace_maps_absence_synonym_to_absenteeism_rule_answer():
+    response = run_chat_trace(
+        "员工缺勤两天会怎样",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "事实：旷工 2 天" in response["answer"]
+    assert "连续旷工3个工作日以下" in response["answer"]
+    assert "记过处分" in response["answer"]
+
+
+def test_trace_does_not_answer_student_behavior_with_employee_discipline_policy():
+    response = run_chat_trace(
+        "学生迟到怎么处理",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "予以书面或口头警告" not in response["answer"]
+    assert "员工纪律制度" not in response["answer"]
+    understanding = _step(response, "query_understanding")
+    assert understanding["details"]["intent_schema"]["audience"] == "student"
+
+
+def test_trace_uses_discipline_classification_for_lateness_and_preserves_label():
+    response = run_chat_trace(
+        "早退两次怎么处理",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "事实：早退" in response["answer"]
+    assert "一学年中出现两次及两次以上" in response["answer"]
+    assert "予以书面或口头警告" in response["answer"]
+    assert "考勤管理制度 > 第五条 迟到早退" not in response["answer"]

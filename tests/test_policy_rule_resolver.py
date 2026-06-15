@@ -48,6 +48,17 @@ def test_policy_lookup_spec_exposes_unified_schema_for_rule_queries():
     assert "扣除旷工期间工资" in spec["expected_evidence"]
 
 
+def test_policy_lookup_spec_exposes_general_intent_schema():
+    spec = build_policy_lookup_spec("我旷工两天会受到什么处罚")
+
+    assert spec["intent_schema"]["target_object"] == "旷工"
+    assert spec["intent_schema"]["target_object_type"] == "behavior"
+    assert spec["intent_schema"]["asked_aspect"] == "disciplinary_action"
+    assert spec["intent_schema"]["condition_parameters"]["duration"] == 2
+    assert "action_evidence" in spec["intent_schema"]["required_evidence_types"]
+    assert "classification_evidence" in spec["intent_schema"]["required_evidence_types"]
+
+
 def test_catalog_covers_salary_inquiry_and_false_reimbursement_queries():
     salary = build_policy_lookup_spec("打听工资属于什么违规")
     reimbursement = build_policy_lookup_spec("虚假报销怎么处理")
@@ -61,3 +72,28 @@ def test_catalog_covers_salary_inquiry_and_false_reimbursement_queries():
     assert reimbursement["target_clause"] == "4. 弄虚作假行为"
     assert reimbursement["target_subclause"] == "4.3"
     assert reimbursement["query_schema"]["target_object"]["value"] == "虚假报销"
+
+def test_absenteeism_synonym_missing_attendance_resolves_to_absence_rule():
+    resolution = resolve_rule_query("员工缺勤两天会怎样")
+
+    assert resolution is not None
+    assert resolution.user_fact == "旷工 2 天"
+    assert resolution.behavior == "absenteeism"
+    assert resolution.matched_rule == "连续旷工3个工作日以下"
+    assert resolution.expected_evidence == ["扣除旷工期间工资", "记过处分"]
+
+
+def test_policy_lookup_does_not_apply_employee_behavior_pattern_to_student_query():
+    spec = build_policy_lookup_spec("学生迟到怎么处理")
+
+    assert spec["intent_schema"]["audience"] == "student"
+    assert spec["target_behavior"] is None
+    assert spec["retrieval_intent"] == "semantic_policy_lookup"
+
+
+def test_policy_lookup_preserves_matched_behavior_label_for_lateness_family():
+    spec = build_policy_lookup_spec("早退两次怎么处理")
+
+    assert spec["target_behavior"] == "lateness"
+    assert spec["target_behavior_label"] == "早退"
+    assert spec["query_schema"]["target_object"]["value"] == "早退"

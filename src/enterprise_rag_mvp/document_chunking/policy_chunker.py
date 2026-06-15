@@ -36,6 +36,7 @@ _RETRIEVAL_CHUNK_TYPES = {
     "clause_group",
     "action_clause",
     "disciplinary_rule",
+    "policy_clause_group",
     "english_category_overview",
     "english_clause_group",
     "english_action_clause",
@@ -1051,15 +1052,78 @@ def _chinese_policy_chunks(text: str, *, document_name: str, max_chars: int, sou
                 )
             )
         elif section_body:
-            chunks.extend(
-                _bounded_chunks(
-                    section_text,
-                    heading_path=[document_name, heading],
-                    metadata={"chunk_type": "policy_section", "language": "zh", "section_title": heading, "chunking_strategy": "policy_clause_group"},
-                    max_chars=max_chars,
-                    source_start=source_offset + start,
-                )
+            clause_chunks = _generic_policy_clause_chunks(
+                section_text,
+                heading=heading,
+                document_name=document_name,
+                max_chars=max_chars,
+                source_offset=source_offset + start,
             )
+            if clause_chunks:
+                chunks.extend(clause_chunks)
+            else:
+                chunks.extend(
+                    _bounded_chunks(
+                        section_text,
+                        heading_path=[document_name, heading],
+                        metadata={"chunk_type": "policy_section", "language": "zh", "section_title": heading, "chunking_strategy": "policy_clause_group"},
+                        max_chars=max_chars,
+                        source_start=source_offset + start,
+                    )
+                )
+    return chunks
+
+
+def _generic_policy_clause_chunks(section_text: str, *, heading: str, document_name: str, max_chars: int, source_offset: int) -> list[DocumentChunk]:
+    group_matches = list(_GROUP_HEADING_RE.finditer(section_text))
+    if not group_matches:
+        return []
+
+    chunks: list[DocumentChunk] = []
+    prefix = section_text[: group_matches[0].start()].strip()
+    if prefix:
+        chunks.extend(
+            _bounded_chunks(
+                prefix,
+                heading_path=[document_name, heading],
+                metadata={
+                    "chunk_type": "policy_section",
+                    "language": "zh",
+                    "section_title": heading,
+                    "chunk_role": "coverage",
+                    "chunking_strategy": "policy_clause_group",
+                },
+                max_chars=max_chars,
+                source_start=source_offset,
+            )
+        )
+
+    for group_index, group_match in enumerate(group_matches):
+        group_end = group_matches[group_index + 1].start() if group_index + 1 < len(group_matches) else len(section_text)
+        group_text = section_text[group_match.start() : group_end].strip()
+        clause_no = group_match.group(1)
+        group_title = f"{clause_no}. {_normalize_heading(group_match.group(2))}"
+        chunks.extend(
+            _bounded_chunks(
+                group_text,
+                heading_path=[document_name, heading, group_title],
+                metadata={
+                    "chunk_type": "policy_clause_group",
+                    "language": "zh",
+                    "section_title": heading,
+                    "group_title": group_title,
+                    "clause_title": group_title,
+                    "clause_no": clause_no,
+                    "clause_range": _clause_range(group_text, clause_no),
+                    "section_path": [heading, group_title],
+                    "start_marker": group_title,
+                    "end_marker": None,
+                    "chunking_strategy": "policy_clause_group",
+                },
+                max_chars=max_chars,
+                source_start=source_offset + group_match.start(),
+            )
+        )
     return chunks
 
 

@@ -2,6 +2,8 @@ import json
 
 from fastapi.testclient import TestClient
 
+from enterprise_rag_mvp.embedding_client import DeterministicEmbeddingClient
+from enterprise_rag_mvp.trace_pipeline import run_chat_trace
 from enterprise_rag_mvp.web_app import _default_runner, create_app
 
 
@@ -179,6 +181,24 @@ def test_admin_document_preview_rejects_blank_input():
 
     assert response.status_code == 422
     assert "text must contain non-whitespace content" in response.text
+
+
+def test_chat_endpoint_runs_real_demo_runner_for_colloquial_policy_query():
+    def demo_runner(query: str, top_k: int):
+        return run_chat_trace(query, embedding_client=DeterministicEmbeddingClient(), store=None, top_k=top_k)
+
+    client = TestClient(create_app(chat_runner=demo_runner))
+
+    response = client.post("/api/chat", json={"message": "骂人有什么处罚", "top_k": 5})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "语言不得体" in body["answer"]
+    assert "如果满足条款条件" in body["answer"]
+    assert "引起投诉" in body["answer"]
+    assert body["results"][0]["citation"]["url"] == "https://example.com/policyDetail/16"
+    understanding = next(step for step in body["steps"] if step["key"] == "query_understanding")
+    assert "并引起投诉" in understanding["details"]["missing_conditions"]
 
 
 def test_chat_endpoint_returns_trace_response():
