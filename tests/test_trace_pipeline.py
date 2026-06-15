@@ -1033,11 +1033,83 @@ def test_section_listing_query_aggregates_all_retained_clause_groups():
     assert "违反保密义务行为" in response["answer"]
     assert "弄虚作假行为" in response["answer"]
     assert "破坏学校管理秩序行为" in response["answer"]
+    assert "4. 弄虚作假行为" in response["answer"]
+    assert "3. 弄虚作假行为" not in response["answer"]
+    assert "3. 破坏学校管理秩序行为" not in response["answer"]
     assert "违规行为相应处理" not in response["answer"]
-    assert len(response["results"]) >= 4
-    assert {item["chunk_id"] for item in response["results"]}.issuperset({
-        "discipline-teacher-ethics-classification-001",
-        "discipline-salary-classification-001",
-        "discipline-false-reimbursement-classification-001",
-        "discipline-absence-classification-001",
-    })
+    assert response["results"][0]["chunk_id"] == "discipline-category-2-children-001"
+
+
+def test_section_listing_query_prefers_structured_children_and_preserves_source_ordinals():
+    class StructuredListingStore:
+        def hybrid_search(self, *, query_text, query_embedding, top_k, metadata_filters):
+            structured_children = PolicyChunk(
+                chunk_id="discipline-category-2-children-001",
+                doc_id="employee-discipline-policy",
+                block_id="category-2-children",
+                text=(
+                    "二类违规行为\n"
+                    "1. 师德师风相关的违规行为\n"
+                    "2. 违反保密义务行为\n"
+                    "3. 侵犯学校权益行为\n"
+                    "4. 破坏学校管理秩序行为"
+                ),
+                heading_path=["***公司人守则-员工纪律制度", "二类违规行为"],
+                metadata={
+                    "source": "员工纪律制度.md",
+                    "source_url": "https://example.com/policyDetail/16",
+                    "chunk_type": "section_children",
+                    "chunking_strategy": "policy_structure",
+                    "node_type": "violation_level",
+                    "section_title": "二类违规行为",
+                    "child_count": 4,
+                    "ordinal_sequence": ["1.", "2.", "3.", "4."],
+                    "ordinal_continuity_status": "complete",
+                },
+            )
+            noisy_group = PolicyChunk(
+                chunk_id="discipline-category-2-group-rough-001",
+                doc_id="employee-discipline-policy",
+                block_id="class-2-falsification",
+                text="（二）二类违规行为 4. 弄虚作假行为 4.1虚假报销。",
+                heading_path=["***公司人守则-员工纪律制度", "二类违规行为", "弄虚作假行为"],
+                metadata={"source": "员工纪律制度.md", "source_url": "https://example.com/policyDetail/16"},
+            )
+            return [SearchResult(chunk=noisy_group, distance=0.01), SearchResult(chunk=structured_children, distance=0.2)]
+
+    response = run_chat_trace(
+        "二类违规有哪些",
+        embedding_client=FakeEmbeddingClient(),
+        store=StructuredListingStore(),
+        top_k=5,
+    )
+
+    assert "结构化章节子项" in response["answer"]
+    assert "1. 师德师风相关的违规行为" in response["answer"]
+    assert "2. 违反保密义务行为" in response["answer"]
+    assert "3. 侵犯学校权益行为" in response["answer"]
+    assert "4. 破坏学校管理秩序行为" in response["answer"]
+    assert "3. 破坏学校管理秩序行为" not in response["answer"]
+    assert response["results"][0]["chunk_id"] == "discipline-category-2-children-001"
+
+
+def test_section_listing_trace_exposes_structured_children_selection():
+    response = run_chat_trace(
+        "二类违规有哪些",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    retrieval_plan = _step(response, "retrieval_plan")
+    assert "policy_structure" in retrieval_plan["details"]["enabled_channels"]
+
+    evidence = _step(response, "evidence_quality")
+    structure_step = next(child for child in evidence["children"] if child["key"] == "policy_structure_children_selection")
+    details = structure_step["details"]
+    assert details["applied"] is True
+    assert details["selected_chunk_id"] == "discipline-category-2-children-001"
+    assert details["child_count"] == 5
+    assert details["ordinal_sequence"] == ["1.", "2.", "3.", "4.", "5."]
+    assert details["ordinal_continuity_status"] == "complete"
+    assert details["why"] == "用户询问章节包含哪些子项，结构化 section_children 能直接给出原文编号和子项列表。"

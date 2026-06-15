@@ -145,13 +145,68 @@ def test_detail_to_policy_chunks_includes_structured_disciplinary_action_chunks(
         }
     )
 
-    action = next(chunk for chunk in chunks if chunk.metadata.get("action_target") == "category_2")
+    action = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "action_clause" and chunk.metadata.get("action_target") == "category_2")
     assert action.metadata["chunk_type"] == "action_clause"
     assert action.metadata["chunking_strategy"] == "policy_clause_group"
     assert action.heading_path == ["HR政策及知识库", "员工纪律制度", "五、违规行为相应处理", "1.2 二类违规行为"]
     assert "1.2二类违规行为" in action.text
     assert "1.1一类违规行为" not in action.text
     assert "1.3三类违规行为" not in action.text
+
+    structure_action = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "action_mapping" and chunk.metadata.get("action_target") == "category_2")
+    assert "予以记过处分" in structure_action.text
+
+
+def test_detail_to_policy_chunks_includes_policy_structure_children_chunks():
+    body = """
+    <p>四、违规行为</p>
+    <p>（二）二类违规行为</p>
+    <p>二类违规行为：指违反师德师风、保密义务、破坏管理秩序等致使机构经济、形象、声誉遭受严重损害的行为。</p>
+    <p>1. 师德师风相关的违规行为</p>
+    <p>1.1违反教师职业行为准则中的限制性规定。</p>
+    <p>2. 违反保密义务行为</p>
+    <p>2.1非因工作需要获取、使用、泄露、传播保密信息。</p>
+    <p>3. 侵犯机构权益行为</p>
+    <p>3.1未经机构授权发表言论，造成不良影响。</p>
+    <p>4. 弄虚作假行为</p>
+    <p>4.1向机构隐瞒或有意提交虚假的重大信息。</p>
+    <p>4.2虚假报销，例如报销未发生的费用或以虚假理由报销费用等。</p>
+    <p>5. 破坏机构管理秩序行为</p>
+    <p>5.1旷工少于三天。</p>
+    <p>五、违规行为相应处理</p>
+    <p>1. 违规行为相应处理</p>
+    <p>1.2二类违规行为：予以记过处分。</p>
+    """
+
+    chunks = detail_to_policy_chunks(
+        {
+            "importInformationId": 16,
+            "cnTitle": "***公司人守则-员工纪律制度",
+            "policyCategoryTypeName": "***公司人守则",
+            "body": body,
+        },
+        max_chars=1200,
+        overlap_chars=50,
+    )
+
+    children = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "section_children")
+    assert children.metadata["chunking_strategy"] == "policy_structure"
+    assert children.metadata["section_title"] == "二类违规行为"
+    assert children.metadata["child_count"] == 5
+    assert children.metadata["ordinal_sequence"] == ["1.", "2.", "3.", "4.", "5."]
+    assert children.metadata["ordinal_continuity_status"] == "complete"
+    assert children.metadata["source_url"] == "https://example.com/policyDetail/16"
+    assert children.heading_path == ["***公司人守则", "***公司人守则-员工纪律制度", "二类违规行为"]
+    assert "4. 弄虚作假行为" in children.text
+    assert "5. 破坏机构管理秩序行为" in children.text
+
+    leaf = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "leaf_clause" and chunk.metadata.get("ordinal_label") == "4.2")
+    assert leaf.metadata["parent_node_type"] == "violation_group"
+    assert "虚假报销" in leaf.text
+
+    action = next(chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "action_mapping")
+    assert action.metadata["action_target"] == "category_2"
+    assert "予以记过处分" in action.text
 
 def test_company_policy_client_fetches_list_and_detail_and_rejects_login_failure():
     requests = []

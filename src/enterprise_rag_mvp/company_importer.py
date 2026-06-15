@@ -10,6 +10,7 @@ import httpx
 from enterprise_rag_mvp.document_chunking import DocumentChunk, chunk_parsed_document, fixed_window_chunks
 from enterprise_rag_mvp.document_parsing import DocumentParserRouter, DocumentSource, clean_html_to_text, parsed_document_text
 from enterprise_rag_mvp.models import PolicyChunk
+from enterprise_rag_mvp.policy_structure import build_policy_chunks_from_structure, parse_policy_structure
 
 DEFAULT_COMPANY_BASE_URL = "https://example.com"
 DEFAULT_POLICY_TYPE = 2
@@ -240,6 +241,8 @@ def _parse_attachment_chunks(
 
 def _policy_chunk_heading_path(base_heading_path: list[str], title: str, document_chunk: DocumentChunk) -> list[str]:
     chunk_path = list(document_chunk.heading_path)
+    if base_heading_path and chunk_path[: len(base_heading_path)] == base_heading_path:
+        return chunk_path
     if chunk_path and chunk_path[0] == title:
         chunk_path = chunk_path[1:]
     return [*base_heading_path, *chunk_path] or [title]
@@ -264,6 +267,31 @@ def _document_chunks_to_policy_chunks(
         chunks.append(
             PolicyChunk(
                 chunk_id=f"{doc_id}-chunk-{index:04d}",
+                doc_id=doc_id,
+                block_id=block_id,
+                text=document_chunk.text,
+                heading_path=_policy_chunk_heading_path(base_heading_path, title, document_chunk),
+                metadata={**base_metadata, **document_chunk.metadata},
+            )
+        )
+    return chunks
+
+
+def _structure_chunks_to_policy_chunks(
+    *,
+    doc_id: str,
+    title: str,
+    base_heading_path: list[str],
+    base_metadata: dict[str, Any],
+    document_chunks: list[DocumentChunk],
+    start_index: int,
+) -> list[PolicyChunk]:
+    chunks: list[PolicyChunk] = []
+    for offset, document_chunk in enumerate(document_chunks, start=start_index):
+        block_id = _policy_chunk_block_id(document_chunk, offset)
+        chunks.append(
+            PolicyChunk(
+                chunk_id=f"{doc_id}-chunk-{offset:04d}",
                 doc_id=doc_id,
                 block_id=block_id,
                 text=document_chunk.text,
@@ -368,6 +396,18 @@ def detail_to_policy_chunks(
     body_chunks: list[PolicyChunk] = []
     if text:
         chunked_body = chunk_parsed_document(parsed_body, max_chars=max_chars, overlap_chars=overlap_chars)
+        structure = parse_policy_structure(
+            parsed_body,
+            doc_id=doc_id,
+            source_name=title,
+            base_heading_path=heading_path or [title],
+            source_url=source_url,
+        )
+        structure_document_chunks = build_policy_chunks_from_structure(
+            structure,
+            base_metadata={"category_name": category_name} if category_name else {},
+            max_chars=max_chars,
+        )
         chunk_quality_metadata = {
             "chunker_name": chunked_body.quality.chunker_name,
             "chunker_version": chunked_body.quality.chunker_version,
@@ -375,14 +415,29 @@ def detail_to_policy_chunks(
             "chunking_strategy": chunked_body.quality.chunking_strategy,
             "chunking_fallback_reason": chunked_body.quality.fallback_reason,
             "chunking_boundary_confidence": chunked_body.quality.boundary_confidence,
+            "structure_parser_name": structure.quality.parser_name,
+            "structure_parser_version": structure.quality.parser_version,
+            "structure_status": structure.quality.status,
+            "structure_node_count": structure.quality.node_count,
+            "structure_issue_count": structure.quality.issue_count,
+            "structure_warnings": structure.quality.warnings or None,
         }
-        body_chunks = _document_chunks_to_policy_chunks(
+        legacy_body_chunks = _document_chunks_to_policy_chunks(
             doc_id=doc_id,
             title=title,
             base_heading_path=heading_path or [title],
             base_metadata={**base_metadata, **{key: value for key, value in chunk_quality_metadata.items() if value is not None}},
             document_chunks=chunked_body.chunks,
         )
+        structure_body_chunks = _structure_chunks_to_policy_chunks(
+            doc_id=doc_id,
+            title=title,
+            base_heading_path=heading_path or [title],
+            base_metadata={**base_metadata, **{key: value for key, value in chunk_quality_metadata.items() if value is not None}},
+            document_chunks=structure_document_chunks,
+            start_index=len(legacy_body_chunks) + 1,
+        )
+        body_chunks = structure_body_chunks + legacy_body_chunks
     return body_chunks + attachment_chunks
 
 

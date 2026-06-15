@@ -508,9 +508,71 @@ def _listing_title_from_result(result: SearchResult, understanding: dict[str, An
     return None
 
 
+def _is_structured_section_children_result(result: SearchResult, understanding: dict[str, Any]) -> bool:
+    if not _is_section_listing_query(understanding):
+        return False
+    metadata = result.chunk.metadata or {}
+    if metadata.get("chunk_type") != "section_children":
+        return False
+    target_section = understanding.get("target_section")
+    if not target_section:
+        return True
+    return str(metadata.get("section_title") or "") == str(target_section) or str(target_section) in " ".join(result.chunk.heading_path)
+
+
+def _structured_listing_items(result: SearchResult) -> list[tuple[str, str]]:
+    metadata = result.chunk.metadata or {}
+    ordinal_sequence = [str(item) for item in metadata.get("ordinal_sequence") or [] if item]
+    lines = [line.strip() for line in re.split(r"[\r\n]+", result.chunk.text) if line.strip()]
+    items: list[tuple[str, str]] = []
+    for line in lines:
+        match = re.match(r"^(\d{1,2}\.)\s*(.+)$", line)
+        if not match:
+            continue
+        ordinal = match.group(1)
+        title = match.group(2).strip(" ：:")
+        if ordinal_sequence and ordinal not in ordinal_sequence:
+            continue
+        items.append((ordinal, title))
+    return items
+
+
+def _policy_structure_children_selection(results: list[SearchResult], understanding: dict[str, Any]) -> dict[str, Any]:
+    if not _is_section_listing_query(understanding):
+        return {
+            "applied": False,
+            "reason": "当前问题不是章节枚举型问题，不需要选择结构化 section_children。",
+        }
+    structured_result = next((result for result in results if _is_structured_section_children_result(result, understanding)), None)
+    if structured_result is None:
+        return {
+            "applied": False,
+            "reason": "最终证据里没有结构化 section_children，使用旧的条款组聚合 fallback。",
+            "candidate_chunk_ids": [result.chunk.chunk_id for result in results],
+        }
+    metadata = structured_result.chunk.metadata or {}
+    items = _structured_listing_items(structured_result)
+    ordinal_sequence = [str(item) for item in metadata.get("ordinal_sequence") or [ordinal for ordinal, _ in items]]
+    return {
+        "applied": True,
+        "selected_chunk_id": structured_result.chunk.chunk_id,
+        "selected_heading_path": structured_result.chunk.heading_path,
+        "section_title": metadata.get("section_title") or understanding.get("target_section"),
+        "child_count": int(metadata.get("child_count") or len(items)),
+        "ordinal_sequence": ordinal_sequence,
+        "ordinal_continuity_status": metadata.get("ordinal_continuity_status") or "unknown",
+        "missing_ordinals": metadata.get("missing_ordinals") or [],
+        "items": [{"ordinal": ordinal, "title": title} for ordinal, title in items],
+        "why": "用户询问章节包含哪些子项，结构化 section_children 能直接给出原文编号和子项列表。",
+        "fallback_if_missing": "如果没有 section_children，才退回到 clause group 聚合，并必须保留原文编号。",
+    }
+
+
 def _is_listing_evidence_result(result: SearchResult, understanding: dict[str, Any]) -> bool:
     if not _is_section_listing_query(understanding):
         return False
+    if _is_structured_section_children_result(result, understanding):
+        return bool(_structured_listing_items(result))
     target_section = understanding.get("target_section")
     haystack = " ".join([result.chunk.text, " ".join(result.chunk.heading_path), _metadata_text(result.chunk)])
     if not target_section or str(target_section) not in haystack:
@@ -749,6 +811,9 @@ def _rerank_results(
         if target_section and _has_section_definition(chunk.text, str(target_section)):
             exact_bonus += 4.0
             reasons.append("命中章节定义正文")
+        if _is_structured_section_children_result(result, understanding):
+            exact_bonus += 10.0
+            reasons.append("命中结构化章节子项")
         if target_clause and (metadata.get("clause_title") == target_clause or target_clause in section_path or target_clause in chunk.text):
             exact_bonus += 4.0
             reasons.append("命中目标条款组")
@@ -1750,9 +1815,60 @@ def _listing_detail(title: str, text: str) -> str:
     return detail
 
 
+def _listing_ordinal_from_result(result: SearchResult) -> str | None:
+    metadata = result.chunk.metadata or {}
+    for key in ["ordinal_label", "clause_no"]:
+        value = metadata.get(key)
+        if value:
+            label = str(value).strip()
+            return label if label.endswith(".") else f"{label}."
+    title = _listing_title_from_result(result, {}) or ""
+    text = re.sub(r"\s+", " ", result.chunk.text)
+    if title:
+        match = re.search(rf"(?<!\d)(\d{{1,2}})\.\s*{re.escape(title)}", text)
+        if match:
+            return f"{match.group(1)}."
+    match = re.search(r"(?<!\d)(\d{1,2})\.\s*[^。；;：:]{2,60}?行为", text)
+    if match:
+        return f"{match.group(1)}."
+    return None
+
+
+def _compose_structured_section_listing_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any]) -> str | None:
+    structured_result = next((result for result in results if _is_structured_section_children_result(result, understanding)), None)
+    if structured_result is None:
+        return None
+    items = _structured_listing_items(structured_result)
+    if not items:
+        return None
+    metadata = structured_result.chunk.metadata or {}
+    target_section = str(metadata.get("section_title") or understanding.get("target_section") or "目标章节")
+    section_label = target_section.removesuffix("行为") if target_section.endswith("行为") else target_section
+    continuity_status = metadata.get("ordinal_continuity_status") or "unknown"
+    lines = [
+        f"我在制度库中返回了 {len(results)} 条候选片段；优先使用结构化章节子项。",
+        f"{section_label}主要包括：",
+    ]
+    for ordinal, title in items:
+        lines.append(f"{ordinal} {title}")
+    if continuity_status != "complete":
+        missing = metadata.get("missing_ordinals") or []
+        lines.append(f"结构质量提醒：该章节编号不连续，缺失编号：{missing}。")
+    lines.append("说明：这里回答的是分类范围，不展开处罚结果；如果要看处理方式，需要继续问对应违规等级的处罚。")
+    return (
+        "\n".join(lines)
+        + "\n\n相关来源：\n"
+        + "\n".join(_source_lines([structured_result]))
+        + f"\n检索方式：{_mode_label(retrieval_mode)}。"
+    )
+
+
 def _compose_section_listing_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any]) -> str | None:
     if not _is_section_listing_query(understanding):
         return None
+    structured_answer = _compose_structured_section_listing_answer(results, retrieval_mode, understanding)
+    if structured_answer:
+        return structured_answer
     listing_results = [result for result in results if _is_listing_evidence_result(result, understanding)]
     if not listing_results:
         return None
@@ -1772,11 +1888,12 @@ def _compose_section_listing_answer(results: list[SearchResult], retrieval_mode:
     lines = [f"我在制度库中返回了 {len(ordered_results)} 条候选片段。", f"{section_label}主要包括："]
     for index, result in enumerate(ordered_results, start=1):
         title = _listing_title_from_result(result, understanding) or f"分类 {index}"
+        ordinal = _listing_ordinal_from_result(result) or f"{index}."
         detail = _listing_detail(title, result.chunk.text)
         if detail:
-            lines.append(f"{index}. {title}：{detail}")
+            lines.append(f"{ordinal} {title}：{detail}")
         else:
-            lines.append(f"{index}. {title}")
+            lines.append(f"{ordinal} {title}")
     lines.append("说明：这里回答的是分类范围，不展开处罚结果；如果要看处理方式，需要继续问对应违规等级的处罚。")
     return (
         "\n".join(lines)
@@ -2322,6 +2439,8 @@ def run_chat_trace(
     enabled_channels = ["dense_vector"]
     if understanding.get("retrieval_intent") == "exact_policy_lookup":
         enabled_channels = ["exact_match", "sparse_keyword", "dense_vector"]
+    if _is_section_listing_query(understanding):
+        enabled_channels = ["policy_structure", *[channel for channel in enabled_channels if channel != "policy_structure"]]
     metadata_filters = {
         "policy_category_hint": understanding["policy_category_hint"],
         "audience_hint": understanding["audience_hint"],
@@ -2350,18 +2469,19 @@ def run_chat_trace(
             details={
                 "tool": "retrieval planner rules",
                 "enabled_channels": enabled_channels,
-                "production_options": ["BM25", "hybrid_search", "metadata_filter"],
+                "production_options": ["policy_structure", "BM25", "hybrid_search", "metadata_filter"],
                 "candidate_limit": candidate_limit,
                 "final_top_k": top_k,
                 "metadata_filters": metadata_filters,
                 "expanded_query_for_future_hybrid": rewrite["expanded_query"],
-                "why": "精确制度词必须启用 exact/sparse 信号；普通语义问题可以先用 dense vector，再由 rerank 压噪。",
+                "why": "精确制度词必须启用 exact/sparse 信号；章节枚举问题优先使用 policy_structure，普通语义问题可以先用 dense vector，再由 rerank 压噪。",
                 "tradeoff": "hybrid search 比纯向量更适合条款编号和制度标题，但需要更好的索引和 metadata。",
                 "term_definitions": [
                     _term("Exact match", "对制度标题、条款号、章节名做确定性匹配，适合二类违规、4.1 这类精确查询。"),
                     _term("BM25", "搜索引擎常用的关键词排序算法，适合制度编号、专有名词和精确词。"),
                     _term("Hybrid search", "把向量语义检索和关键词检索合并，兼顾语义召回和精确匹配。"),
                     _term("Metadata filter", "用分类、适用对象、发布时间等结构化字段限制检索范围。"),
+                    _term("Policy structure", "把制度解析成章节树，适合回答‘有哪些/包括哪些’这种必须保留原始编号的问题。"),
                 ],
                 "pitfalls": ["candidate_limit 太小会让 rerank 没有发挥空间；太大又会增加延迟。", "精确条款查询不能只靠 embedding。"],
             },
@@ -2383,8 +2503,8 @@ def run_chat_trace(
                 _step(
                     key="choose_channels",
                     title="选择召回通道",
-                    summary="精确制度查询启用 exact/sparse/dense；普通查询使用 dense。",
-                    details={"enabled_channels": enabled_channels, "production_options": ["BM25", "hybrid_search"]},
+                    summary="章节枚举查询优先结构树；精确制度查询启用 exact/sparse/dense；普通查询使用 dense。",
+                    details={"enabled_channels": enabled_channels, "production_options": ["policy_structure", "BM25", "hybrid_search"]},
                     duration_ms=0,
                 ),
                 _step(
@@ -2585,6 +2705,7 @@ def run_chat_trace(
         understanding=understanding,
         citation_merge=citation_merge,
     )
+    policy_structure_selection = _policy_structure_children_selection(final_results, understanding)
     steps.append(
         _step(
             key="evidence_quality",
@@ -2597,6 +2718,7 @@ def run_chat_trace(
                 "scope_guard": scope_guard,
                 "citation_merge": citation_merge,
                 "target_evidence_filter": target_evidence_filter,
+                "policy_structure_selection": policy_structure_selection,
                 "term_definitions": [
                     _term("Faithfulness", "回答中的结论是否能被检索证据支持。"),
                     _term("Citation", "让用户能追溯到来源文档、标题、页码或 chunk 的引用信息。"),
@@ -2639,6 +2761,14 @@ def run_chat_trace(
                     details={"context_blocks": context_blocks, "scope_guard": scope_guard},
                     duration_ms=0,
                     status=scope_guard["status"],
+                ),
+                _step(
+                    key="policy_structure_children_selection",
+                    title="结构化章节子项选择",
+                    summary="章节枚举型问题优先使用 section_children，保留原文编号和子项顺序。",
+                    details=policy_structure_selection,
+                    duration_ms=0,
+                    status="ok" if policy_structure_selection.get("applied") else "warn",
                 ),
                 _step(
                     key="filter_reference_only_evidence",

@@ -52,6 +52,33 @@ def sample_policy_chunks() -> list[PolicyChunk]:
             metadata={"source": "员工纪律制度.md", "page": 16, "policy_type": "conduct", "source_url": "https://example.com/policyDetail/16"},
         ),
         PolicyChunk(
+            chunk_id="discipline-category-2-children-001",
+            doc_id="employee-discipline-policy",
+            block_id="class-2-children",
+            text=(
+                "二类违规行为\n"
+                "1. 师德师风相关的违规行为\n"
+                "2. 违反保密义务行为\n"
+                "3. 侵犯学校权益行为\n"
+                "4. 弄虚作假行为\n"
+                "5. 破坏学校管理秩序行为"
+            ),
+            heading_path=["***公司人守则-员工纪律制度", "二类违规行为"],
+            metadata={
+                "source": "员工纪律制度.md",
+                "page": 16,
+                "policy_type": "conduct",
+                "source_url": "https://example.com/policyDetail/16",
+                "chunk_type": "section_children",
+                "chunking_strategy": "policy_structure",
+                "node_type": "violation_level",
+                "section_title": "二类违规行为",
+                "child_count": 5,
+                "ordinal_sequence": ["1.", "2.", "3.", "4.", "5."],
+                "ordinal_continuity_status": "complete",
+            },
+        ),
+        PolicyChunk(
             chunk_id="discipline-absence-severe-classification-001",
             doc_id="employee-discipline-policy",
             block_id="class-1-management-order",
