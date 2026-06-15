@@ -5,6 +5,7 @@ def test_regression_cases_cover_core_policy_failures():
     queries = {case.query for case in REGRESSION_CASES}
 
     assert "二类违规是什么" in queries
+    assert "二类违规有哪些" in queries
     assert "二类违规的处罚是什么" in queries
     assert "我旷工两天会受到什么处罚" in queries
     assert "旷工三天会怎样" in queries

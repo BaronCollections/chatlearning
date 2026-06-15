@@ -11,6 +11,7 @@ DEFINITION_ASPECT = "definition"
 PROCESS_ASPECT = "process"
 APPLICABILITY_ASPECT = "applicability"
 EXCEPTION_ASPECT = "exception"
+SECTION_LISTING_ASPECT = "section_listing"
 
 ABSENTEEISM_BEHAVIOR = "absenteeism"
 
@@ -396,6 +397,8 @@ def has_disciplinary_action_intent(query: str) -> bool:
 def infer_answer_aspect(query: str) -> str | None:
     if has_disciplinary_action_intent(query):
         return DISCIPLINARY_ACTION_ASPECT
+    if any(term in query for term in ["有哪些", "包括哪些", "包含哪些", "哪几类", "哪几种", "类别有哪些", "类型有哪些"]):
+        return SECTION_LISTING_ASPECT
     if any(term in query for term in ["是什么", "属于什么", "哪类", "什么违规", "定义"]):
         return DEFINITION_ASPECT
     if any(term in query for term in ["流程", "怎么申请", "如何申请"]):
@@ -665,7 +668,7 @@ def _apply_behavior_pattern(spec: dict[str, Any], pattern: BehaviorPattern, answ
     spec["target_clause_no"] = pattern.target_clause_no
     spec["target_subclause"] = pattern.target_subclause
     spec["preferred_policy_titles"] = pattern.preferred_policy_titles
-    retrieval_aspect = answer_aspect if answer_aspect == DISCIPLINARY_ACTION_ASPECT else None
+    retrieval_aspect = answer_aspect if answer_aspect in {DISCIPLINARY_ACTION_ASPECT, SECTION_LISTING_ASPECT} else None
     spec["asked_aspect"] = retrieval_aspect
     spec["answer_aspect"] = answer_aspect
     spec["rule_search_terms"] = pattern.search_terms

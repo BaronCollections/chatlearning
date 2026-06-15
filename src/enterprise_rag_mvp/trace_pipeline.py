@@ -14,6 +14,7 @@ from enterprise_rag_mvp.policy_rule_resolver import (
     ABSENTEEISM_BEHAVIOR,
     ABSENTEEISM_BEHAVIOR_TERMS,
     DISCIPLINARY_ACTION_ASPECT,
+    SECTION_LISTING_ASPECT,
     aspect_terms as resolver_aspect_terms,
     build_policy_lookup_spec,
 )
@@ -282,7 +283,12 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
 
     policy_lookup = _policy_lookup_spec(query)
     if policy_lookup["retrieval_intent"] == "exact_policy_lookup":
-        intent = "policy_disciplinary_action_lookup" if policy_lookup.get("asked_aspect") == DISCIPLINARY_ACTION_ASPECT else "policy_definition_lookup"
+        if policy_lookup.get("answer_aspect") == DISCIPLINARY_ACTION_ASPECT:
+            intent = "policy_disciplinary_action_lookup"
+        elif policy_lookup.get("answer_aspect") == SECTION_LISTING_ASPECT:
+            intent = "policy_section_listing_lookup"
+        else:
+            intent = "policy_definition_lookup"
 
     ambiguity_flags: list[str] = []
     if audience_hint == "unknown":
@@ -475,6 +481,45 @@ def _has_aspect_signal(text: str, understanding: dict[str, Any]) -> bool:
     return any(term in text for term in _aspect_terms(understanding.get("asked_aspect")))
 
 
+def _is_section_listing_query(understanding: dict[str, Any]) -> bool:
+    intent_schema = understanding.get("intent_schema") or {}
+    return (
+        understanding.get("answer_aspect") == SECTION_LISTING_ASPECT
+        or understanding.get("asked_aspect") == SECTION_LISTING_ASPECT
+        or intent_schema.get("asked_aspect") == SECTION_LISTING_ASPECT
+    )
+
+
+def _listing_title_from_result(result: SearchResult, understanding: dict[str, Any]) -> str | None:
+    target_section = understanding.get("target_section")
+    heading_path = list(result.chunk.heading_path or [])
+    if target_section and target_section in heading_path:
+        section_index = heading_path.index(str(target_section))
+        if section_index + 1 < len(heading_path):
+            return heading_path[section_index + 1]
+    metadata = result.chunk.metadata or {}
+    clause_title = metadata.get("clause_title") or metadata.get("clauseTitle")
+    if clause_title and clause_title != target_section:
+        return str(clause_title)
+    text = re.sub(r"\s+", " ", result.chunk.text)
+    match = re.search(r"(?<!\d)(\d{1,2})\.\s*([^。；;：:]{2,40}?行为)", text)
+    if match:
+        return match.group(2).strip()
+    return None
+
+
+def _is_listing_evidence_result(result: SearchResult, understanding: dict[str, Any]) -> bool:
+    if not _is_section_listing_query(understanding):
+        return False
+    target_section = understanding.get("target_section")
+    haystack = " ".join([result.chunk.text, " ".join(result.chunk.heading_path), _metadata_text(result.chunk)])
+    if not target_section or str(target_section) not in haystack:
+        return False
+    if "违规行为相应处理" in haystack:
+        return False
+    return _listing_title_from_result(result, understanding) is not None
+
+
 def _has_violation_classification_signal(text: str) -> bool:
     return any(term in text for term in ["一类违规行为", "二类违规行为", "三类违规行为", "破坏学校管理秩序行为"])
 
@@ -585,7 +630,15 @@ def _classify_evidence(result: SearchResult, understanding: dict[str, Any]) -> d
     reason = "普通语义候选，非精确制度查询不做强过滤。"
 
     if understanding.get("retrieval_intent") == "exact_policy_lookup":
-        if _is_reference_only_text(text, understanding):
+        if _is_section_listing_query(understanding):
+            if _is_listing_evidence_result(result, understanding):
+                evidence_type = "listing_evidence"
+                reason = "片段是目标章节下的分类小节，可用于回答‘有哪些/包括哪些’。"
+            else:
+                evidence_type = "irrelevant_or_insufficient_evidence"
+                usable_as_final = False
+                reason = "用户问的是章节分类列表；该片段不是分类小节，或属于处理/处罚条款。"
+        elif _is_reference_only_text(text, understanding):
             evidence_type = "cross_reference_evidence"
             usable_as_final = False
             reason = "片段只提供参见或线索，不能直接回答；可作为二跳检索线索。"
@@ -1024,6 +1077,13 @@ def _evidence_key(result: SearchResult, understanding: dict[str, Any]) -> tuple[
         return (doc_id, target_behavior, "behavior_support", result.chunk.block_id or result.chunk.chunk_id)
     if understanding.get("target_clause"):
         return (doc_id, metadata.get("section_title") or understanding.get("target_section"), metadata.get("clause_title") or understanding.get("target_clause"))
+    if _is_section_listing_query(understanding) and understanding.get("target_section"):
+        listing_title = _listing_title_from_result(result, understanding)
+        return (
+            doc_id,
+            metadata.get("section_title") or understanding.get("target_section"),
+            listing_title or result.chunk.block_id or tuple(result.chunk.heading_path) or result.chunk.chunk_id,
+        )
     if understanding.get("target_section"):
         return (doc_id, metadata.get("section_title") or understanding.get("target_section"))
     section_path = metadata.get("section_path")
@@ -1668,9 +1728,71 @@ def _compose_annual_leave_answer(
     )
 
 
+def _listing_sort_key(item: tuple[int, SearchResult]) -> tuple[int, int]:
+    fallback_index, result = item
+    title = _listing_title_from_result(result, {}) or ""
+    normalized = re.sub(r"\s+", " ", result.chunk.text)
+    if title:
+        match = re.search(rf"(?<!\d)(\d{{1,2}})\.\s*{re.escape(title)}", normalized)
+        if match:
+            return (int(match.group(1)), fallback_index)
+    return (999, fallback_index)
+
+
+def _listing_detail(title: str, text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    position = normalized.find(title)
+    detail = normalized[position + len(title):] if position >= 0 else normalized
+    detail = re.sub(r"^[：:，。；;\s]+", "", detail).strip()
+    detail = re.sub(r"（[一二三四五六七八九十]+）[^。]*?：指[^。]*。?", "", detail).strip()
+    if len(detail) > 140:
+        detail = detail[:140].rstrip("，。；; ") + "..."
+    return detail
+
+
+def _compose_section_listing_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any]) -> str | None:
+    if not _is_section_listing_query(understanding):
+        return None
+    listing_results = [result for result in results if _is_listing_evidence_result(result, understanding)]
+    if not listing_results:
+        return None
+
+    seen_titles: set[str] = set()
+    unique_results: list[SearchResult] = []
+    for result in listing_results:
+        title = _listing_title_from_result(result, understanding)
+        if not title or title in seen_titles:
+            continue
+        seen_titles.add(title)
+        unique_results.append(result)
+
+    ordered_results = [result for _, result in sorted(enumerate(unique_results), key=_listing_sort_key)]
+    target_section = str(understanding.get("target_section") or "目标章节")
+    section_label = target_section.removesuffix("行为") if target_section.endswith("行为") else target_section
+    lines = [f"我在制度库中返回了 {len(ordered_results)} 条候选片段。", f"{section_label}主要包括："]
+    for index, result in enumerate(ordered_results, start=1):
+        title = _listing_title_from_result(result, understanding) or f"分类 {index}"
+        detail = _listing_detail(title, result.chunk.text)
+        if detail:
+            lines.append(f"{index}. {title}：{detail}")
+        else:
+            lines.append(f"{index}. {title}")
+    lines.append("说明：这里回答的是分类范围，不展开处罚结果；如果要看处理方式，需要继续问对应违规等级的处罚。")
+    return (
+        "\n".join(lines)
+        + "\n\n相关来源：\n"
+        + "\n".join(_source_lines(ordered_results))
+        + f"\n检索方式：{_mode_label(retrieval_mode)}。"
+    )
+
+
 def _compose_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any] | None = None, query: str = "") -> str:
     if not results:
         return "没有在当前制度样本中检索到足够相关的内容。"
+
+    section_listing_answer = _compose_section_listing_answer(results, retrieval_mode, understanding or {})
+    if section_listing_answer:
+        return section_listing_answer
 
     if (understanding or {}).get("target_behavior") == ABSENTEEISM_BEHAVIOR:
         absenteeism_answer = _compose_absenteeism_answer(results, retrieval_mode, understanding or {})

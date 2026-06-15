@@ -10,13 +10,25 @@ from enterprise_rag_mvp.query_intent import (
     DISCIPLINARY_ACTION_ASPECT,
     PROCESS_ASPECT,
     CLASSIFICATION_ASPECT,
+    SECTION_LISTING_ASPECT,
     TABLE_LOOKUP_ASPECT,
     QueryIntentSchema,
 )
 
 ACTION_TERMS = ("处罚", "处分", "处理", "警告", "记过", "辞退", "扣除", "解除劳动合同", "调薪", "年终奖")
 STRONG_ACTION_TERMS = ("予以", "给予", "警告", "记过", "辞退", "扣除", "解除劳动合同", "调薪", "年终奖")
-CLASSIFICATION_TERMS = ("一类违规行为", "二类违规行为", "三类违规行为", "属于", "侵犯学校权益行为", "破坏学校管理秩序行为")
+CLASSIFICATION_TERMS = (
+    "一类违规行为",
+    "二类违规行为",
+    "三类违规行为",
+    "属于",
+    "师德师风相关的违规行为",
+    "违反保密义务行为",
+    "侵犯学校权益行为",
+    "弄虚作假行为",
+    "破坏学校管理秩序行为",
+)
+LISTING_EXCLUDE_TERMS = ("违规行为相应处理", "处理结果", "处罚依据")
 DEFINITION_SIGNALS = ("指", "定义", "是指", "是")
 REFERENCE_TERMS = ("参见", "详见", "参考", "参照", "见《", "具体参见")
 PROCESS_TERMS = ("流程", "步骤", "申请", "审批", "办理", "提交")
@@ -131,6 +143,13 @@ def assess_evidence(chunk: PolicyChunk, intent: QueryIntentSchema | dict[str, An
         if matched and _has_any(text, CLASSIFICATION_TERMS):
             return EvidenceAssessment(chunk.chunk_id, "classification_evidence", True, matched, missing, "片段包含分类信号，可回答属于什么类型。")
         return EvidenceAssessment(chunk.chunk_id, "insufficient_evidence", False, matched, missing, "分类类问题需要类别、等级或归属证据。")
+
+    if aspect == SECTION_LISTING_ASPECT:
+        if _has_any(text, LISTING_EXCLUDE_TERMS):
+            return EvidenceAssessment(chunk.chunk_id, "insufficient_evidence", False, matched, missing, "用户问的是分类列表，但片段属于处理或处罚条款。")
+        if matched and _has_any(text, CLASSIFICATION_TERMS):
+            return EvidenceAssessment(chunk.chunk_id, "listing_evidence", True, matched, missing, "片段包含目标章节下的分类信号，可回答有哪些。")
+        return EvidenceAssessment(chunk.chunk_id, "insufficient_evidence", False, matched, missing, "枚举类问题需要目标章节下的分类、小节或条款证据。")
 
     if aspect == TABLE_LOOKUP_ASPECT:
         if matched and _table_score(text) >= 3:

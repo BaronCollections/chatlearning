@@ -1019,3 +1019,25 @@ def test_trace_uses_discipline_classification_for_lateness_and_preserves_label()
     assert "一学年中出现两次及两次以上" in response["answer"]
     assert "予以书面或口头警告" in response["answer"]
     assert "考勤管理制度 > 第五条 迟到早退" not in response["answer"]
+
+def test_section_listing_query_aggregates_all_retained_clause_groups():
+    response = run_chat_trace(
+        "二类违规有哪些",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "二类违规主要包括" in response["answer"]
+    assert "师德师风相关的违规行为" in response["answer"]
+    assert "违反保密义务行为" in response["answer"]
+    assert "弄虚作假行为" in response["answer"]
+    assert "破坏学校管理秩序行为" in response["answer"]
+    assert "违规行为相应处理" not in response["answer"]
+    assert len(response["results"]) >= 4
+    assert {item["chunk_id"] for item in response["results"]}.issuperset({
+        "discipline-teacher-ethics-classification-001",
+        "discipline-salary-classification-001",
+        "discipline-false-reimbursement-classification-001",
+        "discipline-absence-classification-001",
+    })

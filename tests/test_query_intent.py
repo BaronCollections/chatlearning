@@ -62,3 +62,10 @@ def test_extracts_classification_question():
     assert intent.target_object_type == "behavior"
     assert intent.asked_aspect == "classification"
     assert "classification_evidence" in intent.required_evidence_types
+
+def test_extracts_section_listing_question():
+    intent = understand_query("二类违规有哪些")
+
+    assert intent.target_object == "二类违规行为"
+    assert intent.asked_aspect == "section_listing"
+    assert "listing_evidence" in intent.required_evidence_types

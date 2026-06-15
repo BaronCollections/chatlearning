@@ -9,6 +9,7 @@ from enterprise_rag_mvp.query_intent import (
     DISCIPLINARY_ACTION_ASPECT,
     PROCESS_ASPECT,
     CLASSIFICATION_ASPECT,
+    SECTION_LISTING_ASPECT,
     TABLE_LOOKUP_ASPECT,
     QueryIntentSchema,
 )
@@ -94,6 +95,11 @@ def plan_answer(
         if "classification_evidence" not in evidence_types:
             return AnswerPlan("insufficient_evidence", ["cannot_answer", "citations"], citation_ids, cannot_answer_reason="缺少 classification_evidence，不能回答归属类别问题。")
         return AnswerPlan("classification", ["fact", "classification", "citations", "uncertainty"], citation_ids)
+
+    if aspect == SECTION_LISTING_ASPECT:
+        if "listing_evidence" not in evidence_types:
+            return AnswerPlan("insufficient_evidence", ["cannot_answer", "citations"], citation_ids, cannot_answer_reason="缺少 listing_evidence，不能回答章节包含哪些分类。")
+        return AnswerPlan("section_listing", ["overview", "items", "citations", "uncertainty"], citation_ids)
 
     if aspect == TABLE_LOOKUP_ASPECT:
         if "table_evidence" not in evidence_types:

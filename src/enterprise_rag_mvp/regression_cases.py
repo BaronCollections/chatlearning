@@ -51,6 +51,17 @@ REGRESSION_CASES: list[RegressionCase] = [
         tags=["definition", "discipline"],
     ),
     RegressionCase(
+        query="二类违规有哪些",
+        category="discipline",
+        expected_doc_ids=["employee-discipline-policy"],
+        expected_keywords=["二类违规主要包括", "师德师风相关的违规行为", "违反保密义务行为", "弄虚作假行为", "破坏学校管理秩序行为"],
+        forbidden_keywords=["违规行为相应处理", "一类违规行为中的", "三类违规行为中的"],
+        expected_urls=["https://example.com/policyDetail/16"],
+        expected_answer_type="section_listing",
+        expected_evidence_types=["listing_evidence"],
+        tags=["discipline", "section_listing"],
+    ),
+    RegressionCase(
         query="二类违规的处罚是什么",
         category="discipline",
         expected_doc_ids=["employee-discipline-policy"],
