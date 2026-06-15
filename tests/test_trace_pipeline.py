@@ -458,6 +458,8 @@ def test_exact_section_query_prefers_definition_over_cross_reference():
     assert "具体参见" not in response["answer"]
     assert "杭州***公司学校薪酬制度" not in response["answer"]
     assert "（三）三类违规行为" not in response["answer"]
+    assert "5.1" not in response["answer"]
+    assert "5.2" not in response["answer"]
     assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/16"
     evidence = _step(response, "evidence_quality")
     assert evidence["details"]["scope_guard"]["status"] == "ok"
@@ -487,10 +489,42 @@ def test_exact_section_query_deduplicates_sources_and_excludes_competing_section
     assert "二类违规行为：指违反师德师风" in response["answer"]
     assert "（三）三类违规行为" not in response["answer"]
     assert "三类违规行为：指一般" not in response["answer"]
+    assert "1.师德师风" not in response["answer"]
     assert len(response["results"]) == 1
     assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/16"
     evidence = _step(response, "evidence_quality")
     assert evidence["details"]["citation_merge"]["removed_duplicates"] == 2
+
+
+def test_in_memory_demo_section_definition_does_not_expand_child_clause():
+    response = run_chat_trace(
+        "二类违规是什么",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "二类违规行为：指违反师德师风" in response["answer"]
+    assert "5. 破坏学校管理秩序行为" not in response["answer"]
+    assert "5.1渎职" not in response["answer"]
+    assert "5.2旷工" not in response["answer"]
+    assert response["answer_sources"]
+
+
+def test_negative_non_question_policy_assertion_does_not_retrieve_evidence():
+    response = run_chat_trace(
+        "我没有违规",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "请描述具体行为" in response["answer"]
+    assert "破坏学校管理秩序行为" not in response["answer"]
+    assert response["results"] == []
+    assert response["answer_sources"] == []
+    understanding = _step(response, "query_understanding")
+    assert understanding["details"]["intent"] == "unsupported_policy_assertion"
 
 
 def test_disciplinary_action_scope_removes_next_numbered_section_prefix():

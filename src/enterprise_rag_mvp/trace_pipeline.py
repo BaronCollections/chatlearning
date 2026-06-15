@@ -14,6 +14,7 @@ from enterprise_rag_mvp.policy_rule_resolver import (
     ABSENTEEISM_BEHAVIOR,
     ABSENTEEISM_BEHAVIOR_TERMS,
     CLAUSE_DETAIL_ASPECT,
+    DEFINITION_ASPECT,
     DISCIPLINARY_ACTION_ASPECT,
     SECTION_LISTING_ASPECT,
     aspect_terms as resolver_aspect_terms,
@@ -254,6 +255,17 @@ def _aspect_terms(aspect: str | None) -> list[str]:
 def _policy_lookup_spec(query: str, conversation_context: dict[str, Any] | None = None) -> dict[str, Any]:
     return build_policy_lookup_spec(query, conversation_context=conversation_context)
 
+
+def _is_unsupported_policy_assertion(query: str) -> bool:
+    compact = re.sub(r"[\s。.!！?？]", "", query or "")
+    if not compact:
+        return False
+    question_markers = ["吗", "么", "什么", "怎么", "如何", "是否", "处罚", "处分", "处理", "会怎样", "怎么办"]
+    if any(term in query for term in question_markers):
+        return False
+    return compact in {"我没有违规", "没有违规", "我未违规", "未违规", "我没有违反制度", "没有违反制度"}
+
+
 def _detect_query_understanding(query: str, conversation_context: dict[str, Any] | None = None) -> dict[str, Any]:
     policy_category_hint = "general"
     if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗", "骂人", "说脏话", "脏话", "辱骂", "语言不得体", "师德", "师德师风"]):
@@ -283,6 +295,7 @@ def _detect_query_understanding(query: str, conversation_context: dict[str, Any]
         intent = "policy_comparison"
 
     policy_lookup = _policy_lookup_spec(query, conversation_context=conversation_context)
+    unsupported_assertion = _is_unsupported_policy_assertion(query)
     if policy_lookup["retrieval_intent"] == "ambiguous_policy_lookup":
         intent = "policy_ambiguity_resolution"
     elif policy_lookup["retrieval_intent"] == "exact_policy_lookup":
@@ -294,6 +307,8 @@ def _detect_query_understanding(query: str, conversation_context: dict[str, Any]
             intent = "policy_clause_detail_lookup"
         else:
             intent = "policy_definition_lookup"
+    if unsupported_assertion:
+        intent = "unsupported_policy_assertion"
 
     ambiguity_flags: list[str] = []
     if audience_hint == "unknown":
@@ -324,7 +339,7 @@ def _detect_query_understanding(query: str, conversation_context: dict[str, Any]
         ]
         if term in query
     ]
-    return {
+    understanding = {
         "intent": intent,
         "policy_category_hint": policy_category_hint,
         "audience_hint": audience_hint,
@@ -334,6 +349,39 @@ def _detect_query_understanding(query: str, conversation_context: dict[str, Any]
         "aspect_terms": _aspect_terms(policy_lookup.get("asked_aspect")),
         **policy_lookup,
     }
+    if unsupported_assertion:
+        understanding.update(
+            {
+                "retrieval_intent": "unsupported_policy_assertion",
+                "answer_aspect": None,
+                "asked_aspect": None,
+                "target_terms": [],
+                "expected_evidence": [],
+                "ambiguity_flags": [*understanding.get("ambiguity_flags", []), "needs_specific_behavior"],
+                "query_schema": {
+                    "target_object": None,
+                    "answer_aspect": None,
+                    "condition_parameters": {},
+                    "audience": audience_hint,
+                    "rule_match": None,
+                    "notes": ["用户给出的是自我判断，不是可检索的制度问题。"],
+                },
+                "intent_schema": {
+                    "normalized_query": query,
+                    "target_object": None,
+                    "target_object_type": "unsupported_assertion",
+                    "asked_aspect": None,
+                    "condition_parameters": {},
+                    "audience": audience_hint,
+                    "glossary_expansions": [],
+                    "required_evidence_types": [],
+                    "missing_conditions": ["具体行为", "发生时间", "对象/影响范围"],
+                    "confidence": 0.9,
+                    "notes": ["需要用户描述事实，系统才能匹配制度条款。"],
+                },
+            }
+        )
+    return understanding
 
 
 def _rewrite_query(query: str, understanding: dict[str, Any]) -> dict[str, Any]:
@@ -2027,6 +2075,78 @@ def _answer_sources(results: list[SearchResult], understanding: dict[str, Any]) 
     return [_citation_for_result(result, index) for index, result in enumerate(_answer_source_results(results, understanding), start=1)]
 
 
+def _is_section_definition_query(understanding: dict[str, Any]) -> bool:
+    return (
+        understanding.get("retrieval_intent") == "exact_policy_lookup"
+        and understanding.get("target_section")
+        and not understanding.get("target_clause")
+        and (understanding.get("answer_aspect") == DEFINITION_ASPECT or understanding.get("asked_aspect") == DEFINITION_ASPECT)
+    )
+
+
+def _section_scoped_result(result: SearchResult, target_section: str | None) -> SearchResult:
+    if not target_section or target_section not in (result.chunk.heading_path or []):
+        return result
+    section_index = list(result.chunk.heading_path).index(target_section)
+    chunk = PolicyChunk(
+        chunk_id=result.chunk.chunk_id,
+        doc_id=result.chunk.doc_id,
+        block_id=result.chunk.block_id,
+        text=result.chunk.text,
+        heading_path=list(result.chunk.heading_path[: section_index + 1]),
+        metadata={**(result.chunk.metadata or {}), "section_title": target_section},
+    )
+    return SearchResult(chunk=chunk, distance=result.distance)
+
+
+def _extract_section_definition_text(text: str, target_section: str | None) -> str | None:
+    if not text or not target_section:
+        return None
+    normalized = re.sub(r"\s+", " ", text).strip()
+    pattern = rf"({re.escape(str(target_section))}\s*[：:]\s*指.*?。)"
+    match = re.search(pattern, normalized)
+    if match:
+        return match.group(1).strip()
+    start_index, _ = _find_first_marker(normalized, _section_marker_variants(str(target_section)))
+    if start_index < 0:
+        return None
+    child_match = re.search(r"\s\d{1,2}\.\s*[^\d\s]", normalized[start_index:])
+    end_index = start_index + child_match.start() if child_match else len(normalized)
+    definition = normalized[start_index:end_index].strip()
+    return definition or None
+
+
+def _compose_section_definition_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any]) -> str | None:
+    if not _is_section_definition_query(understanding):
+        return None
+    target_section = str(understanding.get("target_section") or "")
+    for result in results:
+        definition = _extract_section_definition_text(result.chunk.text, target_section)
+        if not definition:
+            continue
+        source_result = _section_scoped_result(result, target_section)
+        lines = [
+            f"我在制度库中返回了 {len(results)} 条候选片段；优先使用章节定义证据。",
+            definition,
+            "说明：这里回答的是定义，不展开下级情形；如果要看分类范围，可以继续问“二类违规有哪些”。",
+        ]
+        return (
+            "\n".join(lines)
+            + "\n\n相关来源：\n"
+            + "\n".join(_source_lines([source_result]))
+            + f"\n检索方式：{_mode_label(retrieval_mode)}。"
+        )
+    return None
+
+
+def _compose_unsupported_policy_assertion_answer(query: str) -> str:
+    return (
+        "这句话更像是自我判断，不是一个可以直接检索制度条款的问题。\n"
+        "请描述具体行为、发生时间、对象和影响范围，我才能帮你匹配对应制度。\n"
+        "例如：我旷工两天会有什么处罚；打听工资属于什么违规；虚假报销怎么处理。"
+    )
+
+
 def _next_conversation_context(understanding: dict[str, Any]) -> dict[str, Any]:
     target_section = understanding.get("target_section")
     if not target_section:
@@ -2046,6 +2166,10 @@ def _compose_answer(results: list[SearchResult], retrieval_mode: str, understand
         return ambiguity_answer
     if not results:
         return "没有在当前制度样本中检索到足够相关的内容。"
+
+    section_definition_answer = _compose_section_definition_answer(results, retrieval_mode, understanding)
+    if section_definition_answer:
+        return section_definition_answer
 
     section_listing_answer = _compose_section_listing_answer(results, retrieval_mode, understanding)
     if section_listing_answer:
@@ -2408,6 +2532,35 @@ def run_chat_trace(
             ],
         )
     )
+
+    if understanding.get("retrieval_intent") == "unsupported_policy_assertion":
+        answer = _compose_unsupported_policy_assertion_answer(normalized_query)
+        steps.append(
+            _step(
+                key="answer_and_observe",
+                title="Step 12 · 结构化回答与观测",
+                summary="当前输入不是可检索制度问题，要求用户补充具体事实。",
+                details={
+                    "answer": answer,
+                    "status": "clarification_required",
+                    "why": "没有具体行为事实时，系统不能把用户自我判断强行映射到某个制度条款。",
+                },
+                duration_ms=0,
+                execution_mode="sequential",
+                status="warn",
+            )
+        )
+        return {
+            "trace_id": trace_id,
+            "request_id": trace_id,
+            "query": normalized_query,
+            "answer": answer,
+            "retrieval_mode": "not_applicable",
+            "next_conversation_context": {},
+            "answer_sources": [],
+            "results": [],
+            "steps": steps,
+        }
 
     start = time.perf_counter()
     rewrite = _rewrite_query(normalized_query, understanding)
