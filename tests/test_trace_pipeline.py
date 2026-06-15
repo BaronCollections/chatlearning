@@ -984,6 +984,45 @@ def test_in_memory_demo_answers_annual_leave_days_from_work_year():
     assert response["results"][0]["citation"]["url"] == "https://example.com/policyDetail/3"
 
 
+def test_annual_leave_question_returns_context_for_follow_up_work_year():
+    response = run_chat_trace(
+        "我有几天年假",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=3,
+    )
+
+    assert response["next_conversation_context"] == {
+        "last_policy_category_hint": "leave",
+        "last_target_object": "年休假",
+        "last_answer_aspect": "annual_leave_days",
+        "last_retrieval_intent": "semantic_policy_lookup",
+    }
+
+
+def test_annual_leave_follow_up_work_year_uses_previous_leave_context():
+    first = run_chat_trace(
+        "我有几天年假",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=3,
+    )
+    response = run_chat_trace(
+        "我工作8年",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=3,
+        conversation_context=first["next_conversation_context"],
+    )
+
+    assert "结论" in response["answer"]
+    assert "工作8年" in response["answer"]
+    assert "第六年及以后" in response["answer"]
+    assert "20天" in response["answer"]
+    assert "年假表" in response["answer"]
+    assert response["results"][0]["chunk_id"] == "leave-annual-001"
+
+
 def test_in_memory_demo_answers_three_day_absenteeism_with_violation_level():
     response = run_chat_trace(
         "旷工三天会怎样",
@@ -1179,7 +1218,7 @@ def test_section_listing_returns_next_conversation_context_for_follow_up_clause(
     }
 
 
-def test_unrelated_policy_query_clears_previous_clause_context():
+def test_unrelated_policy_query_replaces_previous_clause_context_with_leave_context():
     response = run_chat_trace(
         "员工年假规则是什么？",
         embedding_client=FakeEmbeddingClient(),
@@ -1188,7 +1227,13 @@ def test_unrelated_policy_query_clears_previous_clause_context():
         conversation_context={"last_target_section": "二类违规行为"},
     )
 
-    assert response["next_conversation_context"] == {}
+    assert response["next_conversation_context"] == {
+        "last_policy_category_hint": "leave",
+        "last_target_object": "年休假",
+        "last_answer_aspect": "annual_leave_days",
+        "last_retrieval_intent": "semantic_policy_lookup",
+    }
+    assert "last_target_section" not in response["next_conversation_context"]
 
 
 def test_clause_title_query_expands_confidentiality_clause_detail():

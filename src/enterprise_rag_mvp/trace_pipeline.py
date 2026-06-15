@@ -266,7 +266,26 @@ def _is_unsupported_policy_assertion(query: str) -> bool:
     return compact in {"我没有违规", "没有违规", "我未违规", "未违规", "我没有违反制度", "没有违反制度"}
 
 
+def _is_annual_leave_context(conversation_context: dict[str, Any] | None) -> bool:
+    if not isinstance(conversation_context, dict):
+        return False
+    return (
+        conversation_context.get("last_policy_category_hint") == "leave"
+        and conversation_context.get("last_target_object") == "年休假"
+    )
+
+
+def _is_annual_leave_work_year_follow_up(query: str, conversation_context: dict[str, Any] | None) -> bool:
+    if not _is_annual_leave_context(conversation_context):
+        return False
+    if _extract_requested_work_year(query) is None:
+        return False
+    other_policy_terms = ["旷工", "违规", "处罚", "处分", "处理", "报销", "采购", "账号", "数据", "安全"]
+    return not any(term in query for term in other_policy_terms)
+
+
 def _detect_query_understanding(query: str, conversation_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    annual_leave_follow_up = _is_annual_leave_work_year_follow_up(query, conversation_context)
     policy_category_hint = "general"
     if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗", "骂人", "说脏话", "脏话", "辱骂", "语言不得体", "师德", "师德师风"]):
         if any(term in query for term in ["年假", "年休假"]):
@@ -281,10 +300,14 @@ def _detect_query_understanding(query: str, conversation_context: dict[str, Any]
         policy_category_hint = "finance"
     elif any(term in query for term in ["安全", "账号", "数据", "外传"]):
         policy_category_hint = "security"
+    if annual_leave_follow_up:
+        policy_category_hint = "leave"
 
     audience_hint = "employee" if any(term in query for term in ["员工", "老师", "教师", "HR", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗", "骂人", "说脏话", "脏话", "辱骂", "语言不得体", "师德", "师德师风"]) else "unknown"
     if any(term in query for term in ["学生", "幼儿园", "小学", "初中", "高中"]):
         audience_hint = "student_or_stage_specific"
+    if annual_leave_follow_up and audience_hint == "unknown":
+        audience_hint = "employee"
 
     intent = "rule_lookup"
     if any(term in query for term in ["流程", "怎么申请", "如何申请"]):
@@ -349,6 +372,46 @@ def _detect_query_understanding(query: str, conversation_context: dict[str, Any]
         "aspect_terms": _aspect_terms(policy_lookup.get("asked_aspect")),
         **policy_lookup,
     }
+    if annual_leave_follow_up:
+        requested_year = _extract_requested_work_year(query)
+        context_resolution = {
+            "applied": True,
+            "source": "conversation_context",
+            "previous_target_object": "年休假",
+            "resolved_target_object": "年休假",
+            "reason": "上一轮问题已经落在年休假，本轮只补充工龄参数，因此继承年休假语境。",
+        }
+        understanding.update(
+            {
+                "context_resolution": context_resolution,
+                "answer_aspect": "annual_leave_days",
+                "asked_aspect": "annual_leave_days",
+                "policy_category_hint": "leave",
+                "audience_hint": "employee",
+                "extracted_terms": [*understanding.get("extracted_terms", []), "年休假"],
+                "query_schema": {
+                    "target_object": {"type": "benefit_rule", "value": "年休假", "key": "annual_leave"},
+                    "answer_aspect": "annual_leave_days",
+                    "condition_parameters": {"work_year": requested_year, "unit": "year"},
+                    "audience": "employee",
+                    "rule_match": None,
+                    "notes": ["该轮问题依赖上一轮年假上下文，当前输入补充了工龄。"],
+                },
+                "intent_schema": {
+                    "normalized_query": query,
+                    "target_object": "年休假",
+                    "target_object_type": "benefit_rule",
+                    "asked_aspect": "annual_leave_days",
+                    "condition_parameters": {"work_year": requested_year, "unit": "year"},
+                    "audience": "employee",
+                    "glossary_expansions": ["年休假", "年假", "带薪年假", "带薪年休假", "休假管理办法"],
+                    "required_evidence_types": ["table_evidence"],
+                    "missing_conditions": [],
+                    "confidence": 0.9,
+                    "notes": ["通过 conversation_context 将追问补全为年休假工龄规则查询。"],
+                },
+            }
+        )
     if unsupported_assertion:
         understanding.update(
             {
@@ -388,7 +451,9 @@ def _rewrite_query(query: str, understanding: dict[str, Any]) -> dict[str, Any]:
     standalone_query = query
     if understanding.get("retrieval_intent") != "exact_policy_lookup":
         if understanding.get("audience_hint") == "employee" and "员工" not in standalone_query:
-            standalone_query = f"员工{standalone_query}"
+            standalone_query = f"员工 {standalone_query}"
+        if understanding.get("policy_category_hint") == "leave" and not any(term in standalone_query for term in ["年假", "年休假"]):
+            standalone_query = f"年休假 {standalone_query}"
         if understanding.get("policy_category_hint") == "leave" and "规则" not in standalone_query:
             standalone_query = f"{standalone_query} 规则"
 
@@ -2148,6 +2213,15 @@ def _compose_unsupported_policy_assertion_answer(query: str) -> str:
 
 
 def _next_conversation_context(understanding: dict[str, Any]) -> dict[str, Any]:
+    intent_schema = understanding.get("intent_schema") or {}
+    if understanding.get("policy_category_hint") == "leave" and intent_schema.get("target_object") == "年休假":
+        return {
+            "last_policy_category_hint": "leave",
+            "last_target_object": "年休假",
+            "last_answer_aspect": "annual_leave_days",
+            "last_retrieval_intent": understanding.get("retrieval_intent"),
+        }
+
     target_section = understanding.get("target_section")
     if not target_section:
         return {}
@@ -2240,6 +2314,8 @@ DATA_FLOW_OUTPUT_KEYS = (
     "condition_parameters",
     "answer_aspect",
     "query_schema",
+    "intent_schema",
+    "context_resolution",
     "rule_resolution",
     "rule_search_terms",
     "expected_evidence",
