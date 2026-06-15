@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG Trace Chat</title>
-    <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="/static/app.css?v=20260615-next-context" />
   </head>
   <body>
     <main class="app-shell">
@@ -44,10 +44,13 @@
       <aside class="trace-pane" aria-label="RAG trace">
         <header class="trace-header">
           <div class="trace-title-group">
-            <label class="workflow-control" for="workflowSelect">
-              <span>执行流程</span>
-              <select id="workflowSelect" class="workflow-select" aria-label="选择 AI 执行流程"></select>
-            </label>
+            <div class="workflow-control-row">
+              <label class="workflow-control" for="workflowSelect">
+                <span>执行流程</span>
+                <select id="workflowSelect" class="workflow-select" aria-label="选择 AI 执行流程"></select>
+              </label>
+              <a id="langfuseTraceLink" class="langfuse-link status-disabled" aria-disabled="true">Langfuse 未启用</a>
+            </div>
             <p id="traceSummary">选择一个流程节点查看细节</p>
           </div>
           <button id="clearButton" type="button">清空</button>
@@ -59,6 +62,6 @@
     </main>
 
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260615-next-context"></script>
   </body>
 </html>

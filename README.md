@@ -157,6 +157,14 @@ Content-Type: application/json
 {
   "query": "我旷工两天会有什么处罚",
   "answer": "结构化答案文本",
+  "answer_sources": [
+    {
+      "citation_id": "[1]",
+      "title": "制度标题",
+      "url": "https://example.com/policyDetail/11",
+      "chunk_id": "chunk-id"
+    }
+  ],
   "results": [
     {
       "content": "候选证据片段",
@@ -171,6 +179,8 @@ Content-Type: application/json
   "steps": []
 }
 ```
+
+`answer_sources` 只表示最终答案实际引用的来源；`results` 保留检索候选和调试信息，供 trace、质量分析和坏例复盘使用。
 
 ### 坏例反馈接口
 
@@ -472,6 +482,11 @@ Content-Type: application/json
 | `RERANKER_SERVICE_URL` | 空 | 可选 cross-encoder reranker 服务地址 |
 | `RERANKER_PROVIDER` | `external_cross_encoder` | trace 中展示的 reranker 名称 |
 | `RAG_BAD_CASE_PATH` | `data/bad_cases.jsonl` | 坏例反馈写入路径；`data/` 默认不提交 |
+| `LANGFUSE_TRACING_ENABLED` | `false` | 设置为 `true` 时尝试把 `/api/chat` 的 trace/span 上报到 Langfuse；未配置时主流程不受影响 |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Langfuse 控制台/API 地址，自托管时改为内部地址 |
+| `LANGFUSE_PROJECT_ID` | 空 | 用于拼接前端“打开 Langfuse”的 trace URL |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 空 | Langfuse SDK 凭据，只能放本机或部署 secret |
+| `LANGFUSE_TRACE_URL_TEMPLATE` | 空 | 可选 trace 链接模板，支持 `{project_id}` 和 `{trace_id}` 占位 |
 | `COMPANY_AUTH_COOKIE` | 空 | 自定义业务制度源认证 cookie，只能放本机或 secret |
 | `COMPANY_POLICY_BASE_URL` | `https://example.com` | 自定义业务制度源地址，公开仓库只保留占位值 |
 

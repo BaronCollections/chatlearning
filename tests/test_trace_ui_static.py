@@ -10,6 +10,7 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     index_html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
 
     assert "workflowSelect" in index_html
+    assert "langfuseTraceLink" in index_html
     assert "企业制度问答 · 检索流程可视化" not in index_html
     assert "12 phases" not in index_html
     assert "36 inner steps" not in index_html
@@ -24,6 +25,15 @@ def test_trace_ui_uses_selectable_dag_workflow_scene():
     assert "renderWorkflowNode" in app_js
     assert "renderMergeRail" in app_js
     assert "workflowSelect.addEventListener" in app_js
+    assert "renderLangfuseStatus" in app_js
+    assert "data.answer_sources" in app_js
+    assert "conversation_context" in app_js
+    assert "updateConversationContext" in app_js
+    assert "observability.trace_url" in app_js
+    assert "Langfuse 未启用" in app_js
+    assert "Langfuse 上报失败" in app_js
+    assert ".langfuse-link" in app_css
+    assert ".langfuse-link.status-ok" in app_css
     assert "parallel_group" in app_js
     assert "merge" in app_js
     assert "RAG 基础流程" in app_js
@@ -387,3 +397,18 @@ def test_evolution_documentation_is_a_standalone_developer_docs_page():
     assert ".pitfall-grid" in docs_css
     assert ".pitfall-card" in docs_css
     assert ".study-prompts" in docs_css
+
+
+def test_index_uses_versioned_static_assets_to_break_browser_cache():
+    index_html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert 'href="/static/app.css?v=' in index_html
+    assert 'src="/static/app.js?v=' in index_html
+
+
+def test_chat_ui_uses_backend_next_conversation_context_before_trace_fallback():
+    app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "data.next_conversation_context" in app_js
+    assert "conversationContext = { ...nextContext }" in app_js
+    assert "traceStep(data, \"query_understanding\")" in app_js

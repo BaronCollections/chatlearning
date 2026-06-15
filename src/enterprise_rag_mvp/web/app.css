@@ -93,6 +93,14 @@ h2 {
   gap: 5px;
 }
 
+.workflow-control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .workflow-control {
   display: flex;
   align-items: center;
@@ -119,6 +127,46 @@ h2 {
   padding: 0 10px;
   font-size: 13px;
   font-weight: 700;
+}
+
+.langfuse-link {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.langfuse-link.status-ok {
+  border-color: #8bd3b0;
+  background: #ecfdf3;
+  color: var(--ok);
+}
+
+.langfuse-link.status-warn {
+  border-color: #f6c67a;
+  background: #fff7ed;
+  color: var(--warn);
+}
+
+.langfuse-link.status-error {
+  border-color: #f4a9a4;
+  background: #fff1f1;
+  color: var(--error);
+}
+
+.langfuse-link[aria-disabled="true"] {
+  cursor: default;
+  pointer-events: none;
 }
 
 .messages {

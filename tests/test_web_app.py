@@ -43,6 +43,9 @@ def test_admin_overview_reports_manageable_surfaces_without_secret_values(monkey
     monkeypatch.setenv("EMBEDDING_SERVICE_URL", "https://embedding.example.test/private")
     monkeypatch.setenv("RERANKER_SERVICE_URL", "https://reranker.example.test/private")
     monkeypatch.setenv("RAG_DISABLE_PGVECTOR", "true")
+    monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     client = TestClient(create_app(chat_runner=lambda query, top_k: {}))
 
     response = client.get("/api/admin/overview")
@@ -56,6 +59,7 @@ def test_admin_overview_reports_manageable_surfaces_without_secret_values(monkey
     assert body["integrations"]["embedding"]["status"] == "configured"
     assert body["integrations"]["pgvector"]["status"] == "disabled"
     assert body["integrations"]["reranker"]["status"] == "configured"
+    assert body["integrations"]["langfuse"]["status"] == "disabled"
     assert "private" not in response.text
 
 
@@ -229,6 +233,73 @@ def test_chat_endpoint_returns_trace_response():
     assert body["answer"] == "测试回答"
     assert body["query"] == "员工年假规则是什么？"
     assert body["steps"][0]["details"] == {"top_k": 2}
+    assert body["observability"]["provider"] == "langfuse"
+    assert body["observability"]["enabled"] is False
+    assert body["observability"]["status"] == "disabled"
+    assert body["observability"]["trace_url"] is None
+
+
+def test_chat_endpoint_returns_langfuse_observability_from_reporter():
+    calls = []
+
+    class FakeLangfuseReporter:
+        def record_chat_trace(self, payload):
+            calls.append(payload)
+            return {
+                "provider": "langfuse",
+                "enabled": True,
+                "status": "ok",
+                "trace_id": "0123456789abcdef0123456789abcdef",
+                "trace_url": "https://langfuse.example/project/proj_1/traces/0123456789abcdef0123456789abcdef",
+                "span_count": 2,
+            }
+
+    def fake_runner(query: str, top_k: int):
+        return {
+            "query": query,
+            "answer": "测试回答",
+            "retrieval_mode": "in_memory_demo",
+            "results": [],
+            "steps": [{"key": "receive_query", "title": "Step 1", "status": "ok", "summary": "收到问题", "details": {}}],
+        }
+
+    client = TestClient(create_app(chat_runner=fake_runner, langfuse_reporter=FakeLangfuseReporter()))
+
+    response = client.post("/api/chat", json={"message": "员工年假规则是什么？", "top_k": 2})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "测试回答"
+    assert body["observability"]["status"] == "ok"
+    assert body["observability"]["trace_url"].endswith("/traces/0123456789abcdef0123456789abcdef")
+    assert calls[0]["query"] == "员工年假规则是什么？"
+
+
+def test_chat_endpoint_keeps_answer_when_langfuse_reporter_fails():
+    class BrokenLangfuseReporter:
+        def record_chat_trace(self, payload):
+            raise RuntimeError("langfuse unavailable")
+
+    def fake_runner(query: str, top_k: int):
+        return {
+            "query": query,
+            "answer": "测试回答",
+            "retrieval_mode": "in_memory_demo",
+            "results": [],
+            "steps": [],
+        }
+
+    client = TestClient(create_app(chat_runner=fake_runner, langfuse_reporter=BrokenLangfuseReporter()))
+
+    response = client.post("/api/chat", json={"message": "员工年假规则是什么？", "top_k": 2})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "测试回答"
+    assert body["observability"]["provider"] == "langfuse"
+    assert body["observability"]["enabled"] is True
+    assert body["observability"]["status"] == "error"
+    assert "langfuse unavailable" in body["observability"]["error"]
 
 
 def test_chat_endpoint_rejects_blank_message_without_calling_runner():
@@ -305,3 +376,43 @@ def test_default_runner_supports_explicit_local_embedding_provider(monkeypatch):
     assert "扣除旷工期间工资" in response["answer"]
     assert "记过处分" in response["answer"]
     assert any(result["citation"].get("url") == "https://example.com/policyDetail/11" for result in response["results"])
+
+
+def test_static_assets_disable_browser_cache_for_fast_ui_fix_rollout():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {"query": query, "answer": "ok", "results": [], "steps": []}))
+
+    response = client.get("/static/app.js")
+
+    assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
+
+
+def test_index_disables_browser_cache_for_frontend_entrypoint():
+    client = TestClient(create_app(chat_runner=lambda query, top_k: {"query": query, "answer": "ok", "results": [], "steps": []}))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
+
+
+def test_chat_endpoint_passes_conversation_context_when_runner_supports_it():
+    calls = []
+
+    def fake_runner(query: str, top_k: int, conversation_context=None):
+        calls.append({"query": query, "top_k": top_k, "conversation_context": conversation_context})
+        return {"query": query, "answer": "ok", "retrieval_mode": "in_memory_demo", "results": [], "steps": []}
+
+    client = TestClient(create_app(chat_runner=fake_runner))
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "破坏学校管理秩序行为",
+            "top_k": 3,
+            "conversation_context": {"last_target_section": "二类违规行为"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["conversation_context"] == {"last_target_section": "二类违规行为"}

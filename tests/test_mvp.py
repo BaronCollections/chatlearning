@@ -96,7 +96,7 @@ def test_sample_policy_chunks_cover_absenteeism_rule_demo():
     assert "连续旷工3个工作日以下" in texts
     assert "扣除旷工期间工资" in texts
     assert "记过处分" in texts
-    assert "4.2旷工少于三天" in texts
+    assert "5.2旷工少于三天" in texts
     assert "二类违规行为" in texts
 
 

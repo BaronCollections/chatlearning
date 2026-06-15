@@ -597,7 +597,7 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
         "7.6 擅自携带违禁品进入工作场所。任何其他经学校制度委员会确定为一类违规行为的行为。"
         "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、破坏学校管理秩序等"
         "致使学校经济、形象、声誉遭受严重损害的行为。"
-        "4. 破坏学校管理秩序行为 4.1渎职给学校造成较大损失。4.2旷工少于三天。"
+        "4. 破坏学校管理秩序行为 4.1渎职给学校造成较大损失。5.2旷工少于三天。"
         "（三）三类违规行为 三类违规行为：指一般的违规行为。"
     )
     student_text = (
@@ -680,7 +680,7 @@ def test_absenteeism_duration_query_returns_matching_penalty_rule():
     assert "属于一类违规行为" not in response["answer"]
     assert "三类违规行为" not in response["answer"]
     assert "破坏学校管理秩序行为" in response["answer"]
-    assert "4.2旷工少于三天" in response["answer"]
+    assert "5.2旷工少于三天" in response["answer"]
     assert "处理结果：" in response["answer"]
     assert "1. 扣除旷工期间工资" in response["answer"]
     assert "2. 给予记过处分" in response["answer"]
@@ -717,7 +717,7 @@ def test_absenteeism_three_days_answer_does_not_reuse_under_three_classification
         "连续旷工3个工作日及以上的，或一年内累计两次及以上旷工的，扣除旷工期间工资，并给予辞退处分。"
     )
     under_three_classification = (
-        "（二）二类违规行为 4. 破坏学校管理秩序行为 4.2旷工少于三天。"
+        "（二）二类违规行为 5. 破坏学校管理秩序行为 5.2旷工少于三天。"
     )
 
     class AbsenteeismThreeDayStore:
@@ -757,7 +757,7 @@ def test_absenteeism_three_days_answer_does_not_reuse_under_three_classification
     assert "事实：旷工 3 天" in response["answer"]
     assert "规则匹配：3 >= 3" in response["answer"]
     assert "给予辞退处分" in response["answer"]
-    assert "4.2旷工少于三天" not in response["answer"]
+    assert "5.2旷工少于三天" not in response["answer"]
     assert "属于二类违规行为" not in response["answer"]
 
 
@@ -1113,3 +1113,111 @@ def test_section_listing_trace_exposes_structured_children_selection():
     assert details["ordinal_sequence"] == ["1.", "2.", "3.", "4.", "5."]
     assert details["ordinal_continuity_status"] == "complete"
     assert details["why"] == "用户询问章节包含哪些子项，结构化 section_children 能直接给出原文编号和子项列表。"
+
+def test_section_listing_exposes_only_answer_used_source():
+    response = run_chat_trace(
+        "二类违规有哪些",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    answer_sources = response["answer_sources"]
+    assert [source["chunk_id"] for source in answer_sources] == ["discipline-category-2-children-001"]
+    assert answer_sources[0]["title"] == "***公司人守则-员工纪律制度 > 二类违规行为"
+    assert answer_sources[0]["url"] == "https://example.com/policyDetail/16"
+    assert len(response["results"]) >= len(answer_sources)
+
+
+def test_section_listing_returns_next_conversation_context_for_follow_up_clause():
+    response = run_chat_trace(
+        "二类违规有哪些",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert response["next_conversation_context"] == {
+        "last_target_section": "二类违规行为",
+        "last_target_clause": None,
+        "last_answer_aspect": "section_listing",
+        "last_retrieval_intent": "exact_policy_lookup",
+    }
+
+
+def test_unrelated_policy_query_clears_previous_clause_context():
+    response = run_chat_trace(
+        "员工年假规则是什么？",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+        conversation_context={"last_target_section": "二类违规行为"},
+    )
+
+    assert response["next_conversation_context"] == {}
+
+
+def test_clause_title_query_expands_confidentiality_clause_detail():
+    response = run_chat_trace(
+        "违反保密义务行为",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "你问的是" in response["answer"]
+    assert "二类违规行为" in response["answer"]
+    assert "第 2 项：违反保密义务行为" in response["answer"]
+    assert "2.1非因工作需要获取、使用、泄露、传播保密信息" in response["answer"]
+    assert "2.2其他违反数据安全规范等制度" in response["answer"]
+    assert "2.3打听、讨论员工工资、奖金、津贴补贴等个人待遇信息" in response["answer"]
+    assert "师德师风相关的违规行为" not in response["answer"]
+    assert [source["chunk_id"] for source in response["answer_sources"]] == ["discipline-salary-classification-001"]
+
+
+def test_numbered_clause_query_expands_clause_instead_of_repeating_listing():
+    response = run_chat_trace(
+        "5. 破坏学校管理秩序行为",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "第 5 项：破坏学校管理秩序行为" in response["answer"]
+    assert "5.1" in response["answer"]
+    assert "5.2旷工少于三天" in response["answer"]
+    assert "二类违规主要包括" not in response["answer"]
+    assert [source["chunk_id"] for source in response["answer_sources"]] == ["discipline-absence-classification-001"]
+
+
+def test_ambiguous_clause_title_query_asks_for_scope_instead_of_mixing_levels():
+    response = run_chat_trace(
+        "破坏学校管理秩序行为",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+    )
+
+    assert "这个条款名在多个违规等级下都存在" in response["answer"]
+    assert "二类违规行为 > 破坏学校管理秩序行为" in response["answer"]
+    assert "一类违规行为 > 破坏学校管理秩序行为" in response["answer"]
+    assert "请补充要查哪个违规等级" in response["answer"]
+    assert "优先依据" not in response["answer"]
+    assert response["answer_sources"] == []
+
+
+def test_ambiguous_clause_title_uses_conversation_section_context():
+    response = run_chat_trace(
+        "破坏学校管理秩序行为",
+        embedding_client=FakeEmbeddingClient(),
+        store=None,
+        top_k=5,
+        conversation_context={"last_target_section": "二类违规行为"},
+    )
+
+    assert "第 5 项：破坏学校管理秩序行为" in response["answer"]
+    assert "所属违规等级：二类违规行为" in response["answer"]
+    assert "这个条款名在多个违规等级下都存在" not in response["answer"]
+    assert [source["chunk_id"] for source in response["answer_sources"]] == ["discipline-absence-classification-001"]
+    assert response["next_conversation_context"]["last_target_section"] == "二类违规行为"
+    assert response["next_conversation_context"]["last_target_clause"] == "5. 破坏学校管理秩序行为"

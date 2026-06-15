@@ -4,6 +4,7 @@ const messages = document.querySelector("#messages");
 const traceSteps = document.querySelector("#traceSteps");
 const traceSummary = document.querySelector("#traceSummary");
 const workflowSelect = document.querySelector("#workflowSelect");
+const langfuseTraceLink = document.querySelector("#langfuseTraceLink");
 const clearButton = document.querySelector("#clearButton");
 
 let latestTraceData = null;
@@ -118,7 +119,7 @@ function renderAssistantResponse(bubble, data) {
   bubble.textContent = "";
   bubble.appendChild(renderStructuredAnswer(data.answer || ""));
 
-  const citations = (data.results || []).map((result) => result.citation).filter(Boolean);
+  const citations = (data.answer_sources || (data.results || []).map((result) => result.citation)).filter(Boolean);
   if (citations.length === 0) return;
 
   const section = document.createElement("section");
@@ -1974,10 +1975,79 @@ function renderWorkflowGraph(workflow) {
   traceSteps.appendChild(workbench);
 }
 
+function traceStep(data, key) {
+  return (data?.steps || []).find((step) => step.key === key) || null;
+}
+
+function updateConversationContext(data) {
+  const nextContext = data.next_conversation_context;
+  if (nextContext && typeof nextContext === "object" && !Array.isArray(nextContext)) {
+    conversationContext = { ...nextContext };
+    return;
+  }
+
+  const understanding = traceStep(data, "query_understanding")?.details || {};
+  const targetSection = understanding.target_section || understanding.context_resolution?.selected?.section;
+  const targetClause = understanding.target_clause || understanding.context_resolution?.selected?.clause;
+  if (!targetSection) return;
+  conversationContext = {
+    ...conversationContext,
+    last_target_section: targetSection,
+    last_target_clause: targetClause || null,
+  };
+}
+
+
+function renderLangfuseStatus() {
+  if (!langfuseTraceLink) return;
+  const observability = latestTraceData?.observability;
+  langfuseTraceLink.className = "langfuse-link status-disabled";
+  langfuseTraceLink.removeAttribute("href");
+  langfuseTraceLink.removeAttribute("target");
+  langfuseTraceLink.removeAttribute("rel");
+  langfuseTraceLink.setAttribute("aria-disabled", "true");
+  langfuseTraceLink.title = "发送问题后，如果后端启用了 Langfuse，这里会打开本次 trace。";
+
+  if (!observability || observability.enabled === false || observability.status === "disabled") {
+    langfuseTraceLink.textContent = "Langfuse 未启用";
+    return;
+  }
+
+  if (observability.status === "ok" && observability.trace_url) {
+    langfuseTraceLink.className = "langfuse-link status-ok";
+    langfuseTraceLink.href = observability.trace_url;
+    langfuseTraceLink.target = "_blank";
+    langfuseTraceLink.rel = "noreferrer noopener";
+    langfuseTraceLink.removeAttribute("aria-disabled");
+    langfuseTraceLink.textContent = "打开 Langfuse";
+    langfuseTraceLink.title = observability.trace_id ? `Trace ID: ${observability.trace_id}` : "打开本次 Langfuse trace";
+    return;
+  }
+
+  if (observability.status === "ok") {
+    langfuseTraceLink.className = "langfuse-link status-warn";
+    langfuseTraceLink.textContent = "Langfuse 已上报";
+    langfuseTraceLink.title = observability.trace_id ? `Trace ID: ${observability.trace_id}；未配置可打开的 Langfuse 链接。` : "已上报，但后端没有返回 trace 链接。";
+    return;
+  }
+
+  if (observability.status === "unavailable") {
+    langfuseTraceLink.className = "langfuse-link status-warn";
+    langfuseTraceLink.textContent = "Langfuse 不可用";
+    langfuseTraceLink.title = observability.error || "后端启用了 Langfuse，但 SDK 或配置不可用。";
+    return;
+  }
+
+  langfuseTraceLink.className = "langfuse-link status-error";
+  langfuseTraceLink.textContent = "Langfuse 上报失败";
+  langfuseTraceLink.title = observability.error || "Langfuse 上报失败，主问答流程未中断。";
+}
+
 function renderSelectedWorkflow() {
   closeNodeDetailDrawer();
   const workflow = getSelectedWorkflow();
   traceSummary.textContent = latestTraceData ? `${workflow.title}：已叠加本次问题的执行细节` : workflow.summary;
+  renderLangfuseStatus();
   renderWorkflowGraph(workflow);
 }
 
@@ -1999,7 +2069,7 @@ async function ask(message) {
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, top_k: 3 }),
+    body: JSON.stringify({ message, top_k: 3, conversation_context: conversationContext }),
   });
 
   if (!response.ok) {
@@ -2018,6 +2088,7 @@ async function ask(message) {
 
   const data = await response.json();
   latestTraceData = data;
+  updateConversationContext(data);
   renderAssistantResponse(pending, data);
   workflowSelect.value = "rag-core";
   renderSelectedWorkflow();
@@ -2036,7 +2107,9 @@ workflowSelect.addEventListener("change", () => renderSelectedWorkflow());
 clearButton.addEventListener("click", () => {
   messages.innerHTML = "";
   latestTraceData = null;
+  conversationContext = {};
   traceSummary.textContent = "选择一个流程节点查看细节";
+  renderLangfuseStatus();
   renderSelectedWorkflow();
 });
 

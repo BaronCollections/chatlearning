@@ -13,6 +13,7 @@ from enterprise_rag_mvp.models import PolicyChunk, SearchResult
 from enterprise_rag_mvp.policy_rule_resolver import (
     ABSENTEEISM_BEHAVIOR,
     ABSENTEEISM_BEHAVIOR_TERMS,
+    CLAUSE_DETAIL_ASPECT,
     DISCIPLINARY_ACTION_ASPECT,
     SECTION_LISTING_ASPECT,
     aspect_terms as resolver_aspect_terms,
@@ -250,10 +251,10 @@ def _aspect_terms(aspect: str | None) -> list[str]:
     return resolver_aspect_terms(aspect)
 
 
-def _policy_lookup_spec(query: str) -> dict[str, Any]:
-    return build_policy_lookup_spec(query)
+def _policy_lookup_spec(query: str, conversation_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    return build_policy_lookup_spec(query, conversation_context=conversation_context)
 
-def _detect_query_understanding(query: str) -> dict[str, Any]:
+def _detect_query_understanding(query: str, conversation_context: dict[str, Any] | None = None) -> dict[str, Any]:
     policy_category_hint = "general"
     if any(term in query for term in ["年假", "年休假", "薪酬", "员工", "HR", "考勤", "违规", "弄虚作假", "旷工", "迟到", "早退", "离岗", "骂人", "说脏话", "脏话", "辱骂", "语言不得体", "师德", "师德师风"]):
         if any(term in query for term in ["年假", "年休假"]):
@@ -281,12 +282,16 @@ def _detect_query_understanding(query: str) -> dict[str, Any]:
     elif any(term in query for term in ["区别", "对比", "比较"]):
         intent = "policy_comparison"
 
-    policy_lookup = _policy_lookup_spec(query)
-    if policy_lookup["retrieval_intent"] == "exact_policy_lookup":
+    policy_lookup = _policy_lookup_spec(query, conversation_context=conversation_context)
+    if policy_lookup["retrieval_intent"] == "ambiguous_policy_lookup":
+        intent = "policy_ambiguity_resolution"
+    elif policy_lookup["retrieval_intent"] == "exact_policy_lookup":
         if policy_lookup.get("answer_aspect") == DISCIPLINARY_ACTION_ASPECT:
             intent = "policy_disciplinary_action_lookup"
         elif policy_lookup.get("answer_aspect") == SECTION_LISTING_ASPECT:
             intent = "policy_section_listing_lookup"
+        elif policy_lookup.get("answer_aspect") == CLAUSE_DETAIL_ASPECT:
+            intent = "policy_clause_detail_lookup"
         else:
             intent = "policy_definition_lookup"
 
@@ -490,6 +495,41 @@ def _is_section_listing_query(understanding: dict[str, Any]) -> bool:
     )
 
 
+def _is_clause_detail_query(understanding: dict[str, Any]) -> bool:
+    return understanding.get("answer_aspect") == CLAUSE_DETAIL_ASPECT or understanding.get("asked_aspect") == CLAUSE_DETAIL_ASPECT
+
+
+def _clause_title_from_understanding(understanding: dict[str, Any]) -> str | None:
+    lookup = understanding.get("clause_lookup") or {}
+    if lookup.get("title"):
+        return str(lookup["title"])
+    target_clause = understanding.get("target_clause")
+    if not target_clause:
+        return None
+    return re.sub(r"^\d{1,2}\.\s*", "", str(target_clause)).strip()
+
+
+def _is_clause_detail_evidence(result: SearchResult, understanding: dict[str, Any]) -> bool:
+    if not _is_clause_detail_query(understanding):
+        return False
+    metadata = result.chunk.metadata or {}
+    if metadata.get("chunk_type") == "section_children":
+        return False
+    target_section = str(understanding.get("target_section") or "")
+    target_clause = str(understanding.get("target_clause") or "")
+    target_title = _clause_title_from_understanding(understanding) or ""
+    heading_text = " ".join(result.chunk.heading_path or [])
+    haystack = " ".join([result.chunk.text, heading_text, _metadata_text(result.chunk)])
+    has_section = not target_section or target_section in haystack
+    has_clause = any(marker and marker in haystack for marker in [target_clause, target_title])
+    metadata_clause = str(metadata.get("clause_title") or metadata.get("section_title") or "")
+    if target_clause and metadata_clause == target_clause:
+        has_clause = True
+    if target_title and metadata_clause == target_title:
+        has_clause = True
+    return has_section and has_clause
+
+
 def _listing_title_from_result(result: SearchResult, understanding: dict[str, Any]) -> str | None:
     target_section = understanding.get("target_section")
     heading_path = list(result.chunk.heading_path or [])
@@ -596,6 +636,8 @@ def _is_direct_target_evidence(result: SearchResult, understanding: dict[str, An
     target_section = understanding.get("target_section")
     if _is_reference_only_text(text, understanding):
         return False
+    if _is_clause_detail_query(understanding):
+        return _is_clause_detail_evidence(result, understanding)
     if understanding.get("target_behavior") == ABSENTEEISM_BEHAVIOR:
         return _has_target_marker(text, understanding) and (
             _has_aspect_signal(text, understanding) or _has_violation_classification_signal(text)
@@ -1903,24 +1945,126 @@ def _compose_section_listing_answer(results: list[SearchResult], retrieval_mode:
     )
 
 
+def _compose_clause_ambiguity_answer(understanding: dict[str, Any]) -> str | None:
+    if understanding.get("retrieval_intent") != "ambiguous_policy_lookup":
+        return None
+    options = list(understanding.get("ambiguity_options") or [])
+    if not options:
+        return None
+    title = str(options[0].get("title") or "该条款")
+    lines = [
+        f"这个条款名在多个违规等级下都存在：{title}。",
+        "为了避免把一类、二类、三类制度混在一起回答，请补充要查哪个违规等级。",
+        "可选范围：",
+    ]
+    for index, option in enumerate(options, start=1):
+        lines.append(f"{index}. {option.get('section')} > {option.get('title')}")
+    lines.append("请补充要查哪个违规等级，例如：二类违规行为下的破坏学校管理秩序行为。")
+    return "\n".join(lines)
+
+
+def _find_clause_detail_result(results: list[SearchResult], understanding: dict[str, Any]) -> SearchResult | None:
+    for result in results:
+        if _is_clause_detail_evidence(result, understanding):
+            return result
+    return results[0] if results else None
+
+
+def _clause_subitems(text: str, clause_no: str | None) -> list[str]:
+    if not clause_no:
+        return []
+    normalized = re.sub(r"\s+", " ", text).strip()
+    pattern = rf"({re.escape(str(clause_no))}\.\d+\s*.*?。)"
+    items = [match.group(1).strip() for match in re.finditer(pattern, normalized)]
+    return list(dict.fromkeys(items))
+
+
+def _compose_clause_detail_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any]) -> str | None:
+    if not _is_clause_detail_query(understanding):
+        return None
+    result = _find_clause_detail_result(results, understanding)
+    if result is None:
+        return None
+    lookup = understanding.get("clause_lookup") or {}
+    section = str(lookup.get("section") or understanding.get("target_section") or "目标章节")
+    clause_no = str(lookup.get("clause_no") or understanding.get("target_clause_no") or "")
+    title = str(lookup.get("title") or _clause_title_from_understanding(understanding) or "目标条款")
+    citation = _citation_for_result(result, 1)
+    lines = [
+        f"我在制度库中返回了 {len(results)} 条候选片段；优先使用精确条款证据。",
+        f"你问的是《{citation['title']}》中“{section}”下的第 {clause_no} 项：{title}。",
+    ]
+    subitems = _clause_subitems(result.chunk.text, clause_no)
+    if subitems:
+        lines.append("包含以下情形：")
+        lines.extend(subitems)
+    else:
+        lines.append("条款内容：" + re.sub(r"\s+", " ", result.chunk.text).strip())
+    lines.append(f"所属违规等级：{section}。")
+    return (
+        "\n".join(lines)
+        + "\n\n相关来源：\n"
+        + "\n".join(_source_lines([result]))
+        + f"\n检索方式：{_mode_label(retrieval_mode)}。"
+    )
+
+
+def _answer_source_results(results: list[SearchResult], understanding: dict[str, Any]) -> list[SearchResult]:
+    if understanding.get("retrieval_intent") == "ambiguous_policy_lookup":
+        return []
+    if _is_section_listing_query(understanding):
+        structured_result = next((result for result in results if _is_structured_section_children_result(result, understanding)), None)
+        if structured_result is not None:
+            return [structured_result]
+        return [result for result in results if _is_listing_evidence_result(result, understanding)]
+    if _is_clause_detail_query(understanding):
+        result = _find_clause_detail_result(results, understanding)
+        return [result] if result is not None else []
+    return results
+
+
+def _answer_sources(results: list[SearchResult], understanding: dict[str, Any]) -> list[dict[str, Any]]:
+    return [_citation_for_result(result, index) for index, result in enumerate(_answer_source_results(results, understanding), start=1)]
+
+
+def _next_conversation_context(understanding: dict[str, Any]) -> dict[str, Any]:
+    target_section = understanding.get("target_section")
+    if not target_section:
+        return {}
+    return {
+        "last_target_section": target_section,
+        "last_target_clause": understanding.get("target_clause"),
+        "last_answer_aspect": understanding.get("answer_aspect") or understanding.get("asked_aspect"),
+        "last_retrieval_intent": understanding.get("retrieval_intent"),
+    }
+
+
 def _compose_answer(results: list[SearchResult], retrieval_mode: str, understanding: dict[str, Any] | None = None, query: str = "") -> str:
+    understanding = understanding or {}
+    ambiguity_answer = _compose_clause_ambiguity_answer(understanding)
+    if ambiguity_answer:
+        return ambiguity_answer
     if not results:
         return "没有在当前制度样本中检索到足够相关的内容。"
 
-    section_listing_answer = _compose_section_listing_answer(results, retrieval_mode, understanding or {})
+    section_listing_answer = _compose_section_listing_answer(results, retrieval_mode, understanding)
     if section_listing_answer:
         return section_listing_answer
 
-    if (understanding or {}).get("target_behavior") == ABSENTEEISM_BEHAVIOR:
-        absenteeism_answer = _compose_absenteeism_answer(results, retrieval_mode, understanding or {})
+    clause_detail_answer = _compose_clause_detail_answer(results, retrieval_mode, understanding)
+    if clause_detail_answer:
+        return clause_detail_answer
+
+    if understanding.get("target_behavior") == ABSENTEEISM_BEHAVIOR:
+        absenteeism_answer = _compose_absenteeism_answer(results, retrieval_mode, understanding)
         if absenteeism_answer:
             return absenteeism_answer
 
-    behavior_answer = _compose_behavior_policy_answer(results, retrieval_mode, understanding or {})
+    behavior_answer = _compose_behavior_policy_answer(results, retrieval_mode, understanding)
     if behavior_answer:
         return behavior_answer
 
-    annual_leave_answer = _compose_annual_leave_answer(results, retrieval_mode, understanding or {}, query)
+    annual_leave_answer = _compose_annual_leave_answer(results, retrieval_mode, understanding, query)
     if annual_leave_answer:
         return annual_leave_answer
 
@@ -2071,6 +2215,7 @@ def run_chat_trace(
     store: Any | None,
     top_k: int = 3,
     reranker_client: Any | None = None,
+    conversation_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(query, str):
         raise TypeError("query must be a string")
@@ -2202,7 +2347,7 @@ def run_chat_trace(
     )
 
     start = time.perf_counter()
-    understanding = _detect_query_understanding(normalized_query)
+    understanding = _detect_query_understanding(normalized_query, conversation_context=conversation_context)
     steps.append(
         _step(
             key="query_understanding",
@@ -2214,6 +2359,7 @@ def run_chat_trace(
                 "tradeoff": "当前用确定性规则方便教学和测试；生产可替换为小模型分类器或 LLM function calling。",
                 "term_definitions": _query_understanding_terms(),
                 "pitfalls": ["查询理解只能抽取和标记，不能凭空补事实。"],
+                "conversation_context": conversation_context or {},
                 **understanding,
             },
             duration_ms=_duration_ms(start),
@@ -2866,9 +3012,13 @@ def run_chat_trace(
     )
 
     return {
+        "trace_id": trace_id,
+        "request_id": trace_id,
         "query": normalized_query,
         "answer": answer,
         "retrieval_mode": retrieval_mode,
+        "next_conversation_context": _next_conversation_context(understanding),
+        "answer_sources": _answer_sources(final_results, understanding),
         "results": [_serialize_result(result, index) for index, result in enumerate(final_results, start=1)],
         "steps": steps,
     }

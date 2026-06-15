@@ -12,6 +12,7 @@ PROCESS_ASPECT = "process"
 APPLICABILITY_ASPECT = "applicability"
 EXCEPTION_ASPECT = "exception"
 SECTION_LISTING_ASPECT = "section_listing"
+CLAUSE_DETAIL_ASPECT = "clause_detail"
 
 ABSENTEEISM_BEHAVIOR = "absenteeism"
 
@@ -192,11 +193,11 @@ ABSENTEEISM_RULES = [
         action_evidence=["扣除旷工期间工资", "记过处分"],
         search_terms=ABSENTEEISM_UNDER_THREE_TERMS,
         policy_titles=ABSENTEEISM_POLICY_TITLE_TERMS,
-        classification_terms=["二类违规行为", "破坏学校管理秩序行为", "4.2旷工少于三天"],
+        classification_terms=["二类违规行为", "破坏学校管理秩序行为", "5.2旷工少于三天"],
         target_section="二类违规行为",
-        target_clause="4. 破坏学校管理秩序行为",
-        target_clause_no="4",
-        target_subclause="4.2",
+        target_clause="5. 破坏学校管理秩序行为",
+        target_clause_no="5",
+        target_subclause="5.2",
         exclude_sections=["一类违规行为", "三类违规行为"],
     ),
     RuleDefinition(
@@ -325,6 +326,65 @@ BEHAVIOR_PATTERNS = [
         preferred_policy_titles=["员工纪律制度", "***公司人守则-员工纪律制度"],
         exclude_sections=["一类违规行为", "二类违规行为"],
     ),
+]
+
+POLICY_CLAUSE_LOOKUPS = [
+    {
+        "section": "二类违规行为",
+        "clause": "1. 师德师风相关的违规行为",
+        "clause_no": "1",
+        "title": "师德师风相关的违规行为",
+        "terms": ["师德师风相关的违规行为", "师德师风", "教师职业行为准则"],
+        "exclude_sections": ["一类违规行为", "三类违规行为"],
+    },
+    {
+        "section": "二类违规行为",
+        "clause": "2. 违反保密义务行为",
+        "clause_no": "2",
+        "title": "违反保密义务行为",
+        "terms": ["违反保密义务行为", "保密义务"],
+        "exclude_sections": ["一类违规行为", "三类违规行为"],
+    },
+    {
+        "section": "二类违规行为",
+        "clause": "3. 侵犯学校权益行为",
+        "clause_no": "3",
+        "title": "侵犯学校权益行为",
+        "terms": ["侵犯学校权益行为", "学校权益"],
+        "exclude_sections": ["一类违规行为", "三类违规行为"],
+    },
+    {
+        "section": "二类违规行为",
+        "clause": "4. 弄虚作假行为",
+        "clause_no": "4",
+        "title": "弄虚作假行为",
+        "terms": ["弄虚作假行为", "弄虚作假"],
+        "exclude_sections": ["一类违规行为", "三类违规行为"],
+    },
+    {
+        "section": "二类违规行为",
+        "clause": "5. 破坏学校管理秩序行为",
+        "clause_no": "5",
+        "title": "破坏学校管理秩序行为",
+        "terms": ["破坏学校管理秩序行为", "破坏学校管理秩序"],
+        "exclude_sections": ["一类违规行为", "三类违规行为"],
+    },
+    {
+        "section": "一类违规行为",
+        "clause": "5. 破坏学校管理秩序行为",
+        "clause_no": "5",
+        "title": "破坏学校管理秩序行为",
+        "terms": ["破坏学校管理秩序行为", "破坏学校管理秩序"],
+        "exclude_sections": ["二类违规行为", "三类违规行为"],
+    },
+    {
+        "section": "三类违规行为",
+        "clause": "5. 破坏学校管理秩序行为",
+        "clause_no": "5",
+        "title": "破坏学校管理秩序行为",
+        "terms": ["破坏学校管理秩序行为", "破坏学校管理秩序"],
+        "exclude_sections": ["一类违规行为", "二类违规行为"],
+    },
 ]
 
 
@@ -614,6 +674,115 @@ def _apply_section_lookup(query: str, spec: dict[str, Any]) -> None:
         _merge_unique(spec, "exclude_clauses", ["3. 侵犯学校权益行为", "5. 破坏学校管理秩序行为"])
 
 
+def _query_mentions_clause_number(query: str, clause_no: str) -> bool:
+    return bool(re.search(rf"(^|[^\d]){re.escape(clause_no)}\s*[\.、．]", query)) or f"第{clause_no}项" in query
+
+
+def _query_mentions_section(query: str, section: str) -> bool:
+    compact_section = section.removesuffix("行为") if section.endswith("行为") else section
+    return section in query or compact_section in query
+
+
+def _matching_clause_lookups(query: str) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for lookup in POLICY_CLAUSE_LOOKUPS:
+        terms = [str(term) for term in lookup.get("terms") or []]
+        title = str(lookup["title"])
+        clause = str(lookup["clause"])
+        clause_no = str(lookup["clause_no"])
+        title_match = title in query or any(term in query for term in terms)
+        numbered_match = _query_mentions_clause_number(query, clause_no) and (title in query or clause in query)
+        section_match = _query_mentions_section(query, str(lookup["section"]))
+        if numbered_match or title_match:
+            if section_match or numbered_match or not any(_query_mentions_section(query, str(other["section"])) for other in POLICY_CLAUSE_LOOKUPS):
+                matches.append(lookup)
+    return matches
+
+
+def _selected_clause_payload(selected: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "section": str(selected["section"]),
+        "clause": str(selected["clause"]),
+        "clause_no": str(selected["clause_no"]),
+        "title": str(selected["title"]),
+    }
+
+
+def _apply_selected_clause_detail(spec: dict[str, Any], selected: dict[str, Any]) -> None:
+    _add_terms(spec, str(selected["section"]), str(selected["clause"]), str(selected["title"]), *[str(term) for term in selected.get("terms") or []])
+    spec["target_section"] = str(selected["section"])
+    spec["target_clause"] = str(selected["clause"])
+    spec["target_clause_no"] = str(selected["clause_no"])
+    spec["target_behavior"] = None
+    spec["target_behavior_label"] = None
+    spec["asked_aspect"] = CLAUSE_DETAIL_ASPECT
+    spec["answer_aspect"] = CLAUSE_DETAIL_ASPECT
+    spec["clause_lookup"] = _selected_clause_payload(selected)
+    spec["preferred_policy_titles"] = ["员工纪律制度", "***公司人守则-员工纪律制度"]
+    spec["exclude_sections"] = [str(item) for item in selected.get("exclude_sections") or []]
+
+
+def _apply_clause_detail_lookup(query: str, spec: dict[str, Any]) -> None:
+    matches = _matching_clause_lookups(query)
+    if not matches:
+        return
+
+    explicit_section = next((lookup for lookup in matches if _query_mentions_section(query, str(lookup["section"]))), None)
+    numbered_matches = [lookup for lookup in matches if _query_mentions_clause_number(query, str(lookup["clause_no"]))]
+    selected = explicit_section or (numbered_matches[0] if numbered_matches else None)
+
+    if selected is None:
+        unique_paths = []
+        for lookup in matches:
+            path = {"section": lookup["section"], "clause": lookup["clause"], "title": lookup["title"]}
+            if path not in unique_paths:
+                unique_paths.append(path)
+        if len(unique_paths) > 1:
+            spec["retrieval_intent"] = "ambiguous_policy_lookup"
+            spec["answer_aspect"] = CLAUSE_DETAIL_ASPECT
+            spec["asked_aspect"] = CLAUSE_DETAIL_ASPECT
+            spec["ambiguity_options"] = unique_paths
+            current_terms = list(spec.get("target_terms") or [])
+            for item in matches:
+                title = str(item["title"])
+                if title not in current_terms:
+                    current_terms.append(title)
+            spec["target_terms"] = current_terms
+            return
+        selected = matches[0]
+
+    _apply_selected_clause_detail(spec, selected)
+
+
+def _apply_conversation_context_to_clause_ambiguity(spec: dict[str, Any], conversation_context: dict[str, Any] | None) -> None:
+    if spec.get("retrieval_intent") != "ambiguous_policy_lookup" or not conversation_context:
+        return
+    context_section = conversation_context.get("target_section") or conversation_context.get("last_target_section")
+    if not context_section:
+        return
+    options = list(spec.get("ambiguity_options") or [])
+    option_title = str(options[0].get("title") if options else "")
+    selected = next(
+        (
+            lookup
+            for lookup in POLICY_CLAUSE_LOOKUPS
+            if str(lookup.get("section")) == str(context_section)
+            and (not option_title or str(lookup.get("title")) == option_title)
+        ),
+        None,
+    )
+    if selected is None:
+        return
+    _apply_selected_clause_detail(spec, selected)
+    spec["context_resolution"] = {
+        "applied": True,
+        "source": "conversation_context",
+        "last_target_section": str(context_section),
+        "selected": _selected_clause_payload(selected),
+        "why": "上一轮问题已经限定违规等级，本轮同名条款追问可在该等级下消歧。",
+    }
+
+
 def _apply_rule_resolution(spec: dict[str, Any], resolution: RuleResolution) -> None:
     trace = resolution.to_trace_dict()
     spec["target_behavior"] = resolution.behavior
@@ -696,7 +865,7 @@ def _apply_behavior_pattern(spec: dict[str, Any], pattern: BehaviorPattern, answ
     }
 
 
-def build_policy_lookup_spec(query: str) -> dict[str, Any]:
+def build_policy_lookup_spec(query: str, conversation_context: dict[str, Any] | None = None) -> dict[str, Any]:
     spec = _base_spec()
     intent_schema = understand_query(query)
     spec["intent_schema"] = intent_schema.to_dict()
@@ -707,11 +876,14 @@ def build_policy_lookup_spec(query: str) -> dict[str, Any]:
     spec["query_schema"]["answer_aspect"] = answer_aspect
 
     _apply_section_lookup(query, spec)
+    if answer_aspect not in {DISCIPLINARY_ACTION_ASPECT, SECTION_LISTING_ASPECT}:
+        _apply_clause_detail_lookup(query, spec)
+    _apply_conversation_context_to_clause_ambiguity(spec, conversation_context)
 
     audience = intent_schema.audience
     allow_employee_policy_patterns = audience in {"employee", "unknown"}
 
-    if allow_employee_policy_patterns:
+    if allow_employee_policy_patterns and spec.get("asked_aspect") != CLAUSE_DETAIL_ASPECT:
         false_reimbursement_pattern = next(item for item in BEHAVIOR_PATTERNS if item.behavior == "false_reimbursement")
         if any(trigger in query for trigger in false_reimbursement_pattern.triggers):
             _apply_behavior_pattern(spec, false_reimbursement_pattern, answer_aspect, query)

@@ -46,7 +46,7 @@ def sample_policy_chunks() -> list[PolicyChunk]:
             text=(
                 "（二）二类违规行为 二类违规行为：指违反师德师风、学校保密义务、"
                 "破坏学校管理秩序等致使学校经济、形象、声誉遭受严重损害的行为。"
-                "4. 破坏学校管理秩序行为 4.1渎职给学校造成较大损失。4.2旷工少于三天。"
+                "5. 破坏学校管理秩序行为 5.1渎职给学校造成较大损失。5.2旷工少于三天。"
             ),
             heading_path=["***公司人守则-员工纪律制度", "二类违规行为", "破坏学校管理秩序行为"],
             metadata={"source": "员工纪律制度.md", "page": 16, "policy_type": "conduct", "source_url": "https://example.com/policyDetail/16"},

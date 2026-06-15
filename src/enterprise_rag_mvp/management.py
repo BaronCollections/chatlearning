@@ -49,6 +49,11 @@ def build_management_overview() -> dict[str, Any]:
         "demo",
     }
     reranker_configured = _configured(os.getenv("RERANKER_SERVICE_URL"))
+    langfuse_flag = (os.getenv("LANGFUSE_TRACING_ENABLED") or "").strip().lower()
+    langfuse_disabled = langfuse_flag in {"0", "false", "no", "off", "disabled"}
+    langfuse_requested = langfuse_flag in {"1", "true", "yes", "on", "enabled"}
+    langfuse_keys_configured = _configured(os.getenv("LANGFUSE_PUBLIC_KEY")) and _configured(os.getenv("LANGFUSE_SECRET_KEY"))
+    langfuse_configured = not langfuse_disabled and langfuse_keys_configured
 
     knowledge_bases = [
         ManagementKnowledgeBaseSummary(
@@ -94,6 +99,17 @@ def build_management_overview() -> dict[str, Any]:
             status="configured" if reranker_configured else "optional",
             label="Cross-encoder reranker",
             detail="已配置外部 reranker。" if reranker_configured else "未配置外部 reranker，系统会使用确定性 fallback。",
+        ),
+        "langfuse": ManagementIntegrationStatus(
+            status="configured" if langfuse_configured else ("missing" if langfuse_requested else "disabled"),
+            label="Langfuse observability",
+            detail=(
+                "已配置 Langfuse trace 上报。"
+                if langfuse_configured
+                else "已请求启用 Langfuse，但缺少 LANGFUSE_PUBLIC_KEY 或 LANGFUSE_SECRET_KEY。"
+                if langfuse_requested
+                else "未启用 Langfuse；/api/chat 会继续返回本地 trace。"
+            ),
         ),
     }
     return {
